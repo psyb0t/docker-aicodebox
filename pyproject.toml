@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aicodebox"
+version = "0.1.0"
+description = "Agent-agnostic base for aicodebox images (adapter contract + api/telegram/cron/mcp modes)"
+requires-python = ">=3.12"
+dependencies = [
+  "pyyaml>=6.0,<7",
+  "fastapi>=0.115.0,<1",
+  "uvicorn>=0.30.0,<1",
+  "pydantic>=2.0,<3",
+  "python-telegram-bot>=21.0,<22",
+  "croniter>=3.0,<4",
+  "mcp>=1.0,<2",
+]
+
+[tool.setuptools.packages.find]
+include = ["aicodebox*"]
+exclude = ["aicodebox.tests*"]
+
+[project.optional-dependencies]
+test = ["pytest>=8.0", "pytest-asyncio>=0.23"]
+
+[tool.pytest.ini_options]
+testpaths = ["aicodebox/tests"]
+asyncio_mode = "auto"
+filterwarnings = ["ignore::DeprecationWarning"]

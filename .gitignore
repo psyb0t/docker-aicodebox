@@ -1,0 +1,22 @@
+# Secrets — never commit
+.env
+.env.*
+*.env
+!.env.example
+
+# Local tooling / scratch
+ANUSTIMES.md
+git-update.sh
+pyrightconfig.json
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+
+# Local venvs
+.venv/
+venv/
