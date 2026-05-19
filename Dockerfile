@@ -6,11 +6,11 @@
 # auth-env loading, and mode dispatch (api / telegram / cron).
 #
 # Child images:
-#   FROM aicodebox-base:local
+#   FROM psyb0t/aicodebox
 #   - install your agent binary
-#   - pip install your adapter package
+#   - uv pip install --system your adapter package
 #   - ENV AICODEBOX_ADAPTER=yourpkg.adapter:YourAdapter
-FROM ubuntu:24.04
+FROM ubuntu:24.04@sha256:c4a8d5503dfb2a3eb8ab5f807da5bc69a85730fb49b5cfca2330194ebcc41c7b
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -26,11 +26,14 @@ RUN apt-get update && apt-get install -y \
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
     apt-get install -y nodejs && rm -rf /var/lib/apt/lists/*
 
-# Python + shared deps used by all modes. Pinned floors keep behaviour stable;
-# upper caps prevent surprise major bumps.
+# Python — uv manages all package installs.
 RUN apt-get update && apt-get install -y \
-    python3 python3-pip python3-venv \
+    python3 python3-venv \
     && rm -rf /var/lib/apt/lists/*
+
+COPY --from=ghcr.io/astral-sh/uv:0.11.15@sha256:e590846f4776907b254ac0f44b5b380347af5d90d668138ca7938d1b0c2f98d3 /uv /usr/local/bin/uv
+
+ENV UV_COMPILE_BYTECODE=1
 
 # Docker CE for docker-in-docker workflows when the host socket is mounted.
 RUN install -m 0755 -d /etc/apt/keyrings && \
@@ -57,11 +60,11 @@ EOF
 RUN chmod 440 /etc/sudoers.d/aicode-nopass
 
 # Install the aicodebox python package (adapters contract + api/telegram/cron/
-# mcp modes). Editable install so child Dockerfile changes don't require a
-# rebuild of this layer if they overlay the package.
-COPY pyproject.toml /opt/aicodebox/pyproject.toml
+# mcp modes). Locked via uv.lock for supply-chain reproducibility.
+COPY pyproject.toml uv.lock /opt/aicodebox/
 COPY aicodebox /opt/aicodebox/aicodebox
-RUN pip3 install --no-cache-dir --break-system-packages --ignore-installed /opt/aicodebox
+RUN --mount=type=cache,target=/root/.cache/uv \
+    cd /opt/aicodebox && uv sync --frozen --no-dev --system
 
 RUN mkdir -p /workspace && chown -R aicode:aicode /workspace
 WORKDIR /workspace

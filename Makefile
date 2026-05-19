@@ -17,16 +17,15 @@ run: build ## Drop into an interactive shell inside the base image
 test: test-unit ## Run all tests
 
 test-unit: ## Run the python unit-test suite locally (no docker)
-	python -m pip install --quiet -e ".[test]"
-	python -m pytest -q
+	uv run --group dev pytest -q
 
 lint: ## Lint python sources
-	python -m flake8 aicodebox/
-	python -m pyright aicodebox/ || true
+	uv run --group dev flake8 aicodebox/
+	uv run --group dev pyright aicodebox/ || true
 
 format: ## Format python sources
-	python -m isort aicodebox/
-	python -m black aicodebox/
+	uv run --group dev isort aicodebox/
+	uv run --group dev black aicodebox/
 
 clean: ## Remove built images and python caches
 	docker rmi $(IMAGE_NAME):$(TAG) 2>/dev/null || true
