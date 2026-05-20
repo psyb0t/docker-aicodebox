@@ -39,10 +39,10 @@ That's it. The base owns the surfaces. Your adapter translates "run this prompt"
 
 | Layer       | The goods                                                                                                                                                                                          |
 | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **OS**      | Ubuntu 24.04. `aicode` user (UID 1000), passwordless sudo, docker group. Cloudflare apt mirror so builds don't crawl.                                                                              |
+| **OS**      | Ubuntu 24.04. `aicode` user (UID 1000), passwordless sudo, docker group.                                                                                                                          |
 | **Runtimes**| Node.js 22 LTS (for agents that ship as npm), Python 3.12, Docker CE + buildx + compose (in case your agent needs to spawn containers).                                                            |
 | **Package** | `aicodebox` — the adapter contract + four mode dispatchers (api / telegram / cron / mcp). Pure Python, zero side effects until you boot a mode.                                                    |
-| **Modes**   | All optional, all opt-in via env vars. Run none, run one, run several in the same container. The entrypoint forks the modes you asked for and reaps them clean on SIGTERM.                          |
+| **Modes**   | All optional, all opt-in via env vars. Run none or one per container. Exception: telegram + cron can share a container — cron runs in-thread inside the telegram process.                          |
 | **Auth**    | `AICODEBOX_AUTH_TOKENS` (comma-separated bearer list) gates the API + MCP. Empty list = wide open. Telegram has its own allowlist.                                                                  |
 | **State**   | Per-chat overrides + cron history go under `$HOME/.aicodebox/`. Bind-mount that path if you want it to outlive the container. The package itself stores nothing.                                    |
 
@@ -78,7 +78,7 @@ The package gets resolved at first call, cached for the process lifetime. Every 
 
 ## Modes
 
-Modes are pickled by env vars. Set the flag, the entrypoint starts that mode. No flag, no mode. Combine freely — telegram + cron in one container is the common shape.
+Modes are controlled by env vars. Set the flag, the entrypoint starts that mode. No flag, no mode. One mode per container — except telegram + cron, which share a process (cron runs in-thread inside telegram). API always wins if set alongside anything else.
 
 ### API mode
 
