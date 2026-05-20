@@ -6,7 +6,6 @@ build-backend = "hatchling.build"
 name = "aicodebox"
 version = "0.1.0"
 description = "Agent-agnostic base for aicodebox images (adapter contract + api/telegram/cron/mcp modes)"
-readme = "README.md"
 license = { text = "WTFPL" }
 requires-python = ">=3.12"
 authors = [{ name = "psyb0t" }]

@@ -14,8 +14,6 @@ FROM ubuntu:24.04@sha256:c4a8d5503dfb2a3eb8ab5f807da5bc69a85730fb49b5cfca2330194
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN sed -i 's|http://archive.ubuntu.com|http://cloudflaremirrors.com|g; s|http://security.ubuntu.com|http://cloudflaremirrors.com|g' /etc/apt/sources.list.d/ubuntu.sources || true
-
 RUN apt-get update && apt-get install -y \
     git curl wget gnupg ca-certificates sudo unzip \
     software-properties-common lsb-release jq \
@@ -60,11 +58,15 @@ EOF
 RUN chmod 440 /etc/sudoers.d/aicode-nopass
 
 # Install the aicodebox python package (adapters contract + api/telegram/cron/
-# mcp modes). Locked via uv.lock for supply-chain reproducibility.
+# mcp modes). uv export turns the lockfile into a pinned requirements list;
+# uv pip install --system installs those into the system Python so child images
+# can layer packages on top without needing a venv.
 COPY pyproject.toml uv.lock /opt/aicodebox/
 COPY aicodebox /opt/aicodebox/aicodebox
 RUN --mount=type=cache,target=/root/.cache/uv \
-    cd /opt/aicodebox && uv sync --frozen --no-dev --system
+    cd /opt/aicodebox && \
+    uv export --frozen --no-dev -o /tmp/aicodebox-reqs.txt && \
+    uv pip install --system --break-system-packages -r /tmp/aicodebox-reqs.txt
 
 RUN mkdir -p /workspace && chown -R aicode:aicode /workspace
 WORKDIR /workspace
