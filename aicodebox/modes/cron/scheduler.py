@@ -64,9 +64,9 @@ def _slugify(path: str) -> str:
 
 
 def _post_to_telegram(chat_id: int, html: str) -> int | None:
-    token = os.environ.get("AICODEBOX_TELEGRAM_BOT_TOKEN")
+    token = os.environ.get("AICODEBOX_TELEGRAM_MODE_TOKEN")
     if not token:
-        log.warning("telegram_chat_id set but AICODEBOX_TELEGRAM_BOT_TOKEN missing")
+        log.warning("telegram_chat_id set but AICODEBOX_TELEGRAM_MODE_TOKEN missing")
         return None
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     data = urllib.parse.urlencode(
@@ -196,9 +196,9 @@ def _notify_telegram(
 ) -> None:
     if not job.telegram_chat_id:
         return
-    if not os.environ.get("AICODEBOX_TELEGRAM_BOT_TOKEN"):
+    if not os.environ.get("AICODEBOX_TELEGRAM_MODE_TOKEN"):
         log.warning(
-            "[%s] telegram_chat_id set but AICODEBOX_TELEGRAM_BOT_TOKEN missing",
+            "[%s] telegram_chat_id set but AICODEBOX_TELEGRAM_MODE_TOKEN missing",
             job.name,
         )
         return
@@ -444,9 +444,9 @@ def request_shutdown() -> None:
 
 def main() -> int:
     configure_logging()
-    cron_file = os.environ.get("AICODEBOX_MODE_CRON_FILE")
+    cron_file = os.environ.get("AICODEBOX_CRON_MODE_FILE")
     if not cron_file:
-        log.error("AICODEBOX_MODE_CRON_FILE not set")
+        log.error("AICODEBOX_CRON_MODE_FILE not set")
         return 1
     try:
         cfg = load(cron_file)

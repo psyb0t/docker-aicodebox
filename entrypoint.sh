@@ -25,11 +25,20 @@ usage() {
     cat <<EOF >&2
 usage: <container> [args passed to the agent CLI]
 
-env (mode selection):
-  AICODEBOX_MODE_API=1            run the FastAPI server (programmatic API)
-  AICODEBOX_MODE_TELEGRAM=1       run the telegram bot
-  AICODEBOX_MODE_CRON=1           run the cron scheduler
-  AICODEBOX_MODE_CRON_FILE=path   yaml file for cron mode
+env (mode flags — pick a foreground mode + optional MCP):
+  AICODEBOX_API_MODE=1            run the FastAPI server (programmatic API)
+  AICODEBOX_TELEGRAM_MODE=1       run the telegram bot
+  AICODEBOX_CRON_MODE=1           run the cron scheduler
+  AICODEBOX_MCP_MODE=1            expose the MCP server (coexists w/ any mode)
+
+env (mode config):
+  AICODEBOX_API_MODE_PORT=8080    port for API mode
+  AICODEBOX_API_MODE_TOKEN=...    bearer token for API mode (empty = no auth)
+  AICODEBOX_TELEGRAM_MODE_TOKEN   bot token from @BotFather
+  AICODEBOX_TELEGRAM_MODE_CONFIG  path to telegram yaml
+  AICODEBOX_CRON_MODE_FILE=path   yaml file for cron mode
+  AICODEBOX_MCP_MODE_PORT=8081    port for standalone MCP server
+  AICODEBOX_MCP_MODE_TOKEN=...    bearer token for MCP (no fallback)
 
 env (adapter):
   AICODEBOX_ADAPTER               pkg.module:Class for the active agent
@@ -98,15 +107,29 @@ if [ -f "$AUTH_FILE" ]; then
 fi
 
 # ── 5. decide what to run ─────────────────────────────────────────────────────
+#
+# Foreground modes (mutually exclusive, priority order): API > Telegram > Cron.
+# Telegram + Cron is the one allowed pair — cron runs in-thread inside telegram.
+# MCP mode is independent — it can coexist with any foreground mode, served on
+# its own port. In API mode the MCP surface is mounted at /mcp on the API port
+# (no extra process). In other modes (telegram/cron/passthrough), MCP runs as
+# a background uvicorn process spawned before the foreground exec.
 _mode_module=""
-if [ "${AICODEBOX_MODE_API:-}" = "1" ]; then
+if [ "${AICODEBOX_API_MODE:-}" = "1" ]; then
     _mode_module="aicodebox.modes.api"
-elif [ "${AICODEBOX_MODE_TELEGRAM:-}" = "1" ] && [ "${AICODEBOX_MODE_CRON:-}" = "1" ]; then
-    _mode_module="aicodebox.modes.telegram"   # telegram owns the proc; cron runs in-thread
-elif [ "${AICODEBOX_MODE_TELEGRAM:-}" = "1" ]; then
+elif [ "${AICODEBOX_TELEGRAM_MODE:-}" = "1" ] && [ "${AICODEBOX_CRON_MODE:-}" = "1" ]; then
     _mode_module="aicodebox.modes.telegram"
-elif [ "${AICODEBOX_MODE_CRON:-}" = "1" ]; then
+elif [ "${AICODEBOX_TELEGRAM_MODE:-}" = "1" ]; then
+    _mode_module="aicodebox.modes.telegram"
+elif [ "${AICODEBOX_CRON_MODE:-}" = "1" ]; then
     _mode_module="aicodebox.modes.cron"
+fi
+
+# MCP standalone runs as a sidecar process unless the foreground IS the API
+# (then /mcp is mounted in-process).
+_spawn_mcp_sidecar=0
+if [ "${AICODEBOX_MCP_MODE:-}" = "1" ] && [ "$_mode_module" != "aicodebox.modes.api" ]; then
+    _spawn_mcp_sidecar=1
 fi
 
 # ── 6. build env exports & dispatch ───────────────────────────────────────────
@@ -131,9 +154,12 @@ done
 # aicodebox-specific env (modes + adapter selection).
 for var in AICODEBOX_ADAPTER AICODEBOX_AGENT_BINARY AICODEBOX_WORKSPACE \
            AICODEBOX_CONTAINER_NAME \
-           AICODEBOX_MODE_API AICODEBOX_MODE_API_PORT AICODEBOX_MODE_API_TOKEN \
-           AICODEBOX_MODE_TELEGRAM AICODEBOX_MODE_CRON AICODEBOX_MODE_CRON_FILE \
-           AICODEBOX_TELEGRAM_BOT_TOKEN AICODEBOX_TELEGRAM_CONFIG \
+           AICODEBOX_AVAILABLE_MODELS AICODEBOX_AVAILABLE_EFFORTS \
+           AICODEBOX_API_MODE AICODEBOX_API_MODE_PORT AICODEBOX_API_MODE_TOKEN \
+           AICODEBOX_TELEGRAM_MODE AICODEBOX_TELEGRAM_MODE_TOKEN \
+           AICODEBOX_TELEGRAM_MODE_CONFIG AICODEBOX_TELEGRAM_MODE_OVERRIDES \
+           AICODEBOX_CRON_MODE AICODEBOX_CRON_MODE_FILE AICODEBOX_CRON_MODE_HISTORY_DIR \
+           AICODEBOX_MCP_MODE AICODEBOX_MCP_MODE_PORT AICODEBOX_MCP_MODE_TOKEN \
            TELEGRAM_CHAT_ID DEBUG; do
     val="$(printenv "$var" 2>/dev/null || true)"
     if [ -n "$val" ]; then
@@ -142,7 +168,7 @@ for var in AICODEBOX_ADAPTER AICODEBOX_AGENT_BINARY AICODEBOX_WORKSPACE \
 done
 
 if [ -n "$_mode_module" ]; then
-    PY_INVOKE="exec python3 -m $_mode_module"
+    _FG_INVOKE="exec python3 -m $_mode_module"
 else
     # Fall through to the agent's own CLI for interactive / passthrough use.
     AGENT_BIN="${AICODEBOX_AGENT_BINARY:-pi}"
@@ -150,7 +176,17 @@ else
     for a in "$@"; do
         ESCAPED="$ESCAPED $(printf '%q' "$a")"
     done
-    PY_INVOKE="exec $ESCAPED"
+    _FG_INVOKE="exec $ESCAPED"
+fi
+
+# MCP sidecar: spawn as a background subshell that traps its parent's exit so
+# the python uvicorn dies with the container. The foreground exec then takes
+# over PID 1 and dictates container lifetime.
+if [ "$_spawn_mcp_sidecar" = "1" ]; then
+    _MCP_INVOKE="python3 -m aicodebox.modes.mcp &"
+    PY_INVOKE="$_MCP_INVOKE $_FG_INVOKE"
+else
+    PY_INVOKE="$_FG_INVOKE"
 fi
 
 cd "$AICODE_WORKSPACE" 2>/dev/null || cd /workspace

@@ -5,8 +5,8 @@ Endpoints:
   POST /run                              → sync or async run via active adapter
   GET  /run/result?runId=<id>            → poll async run
 
-Auth: optional bearer token via AICODEBOX_MODE_API_TOKEN.
-Port: AICODEBOX_MODE_API_PORT (default 8080).
+Auth: optional bearer token via AICODEBOX_API_MODE_TOKEN.
+Port: AICODEBOX_API_MODE_PORT (default 8080).
 """
 
 from __future__ import annotations
@@ -80,9 +80,13 @@ app.include_router(oai_router)
 
 
 def _maybe_mount_mcp() -> None:
-    """Mount /mcp unconditionally — the adapter contract assumes the agent
-    can run; the MCP server itself just exposes tools that invoke run()."""
+    """Mount /mcp inside the API server when AICODEBOX_MCP_MODE=1.
+
+    Auth is gated by AICODEBOX_MCP_MODE_TOKEN (no fallback to API token —
+    MCP runs as its own surface, with its own bearer)."""
     global _mcp_lifespan_cm
+    if os.environ.get("AICODEBOX_MCP_MODE") != "1":
+        return
     try:
         from aicodebox.modes.api.mcp_server import MCPWithAuth, build_mcp_app
         mcp_app = build_mcp_app()
@@ -253,11 +257,11 @@ def main() -> int:
     configure_logging()
     import uvicorn
 
-    port_raw = os.environ.get("AICODEBOX_MODE_API_PORT", "8080")
+    port_raw = os.environ.get("AICODEBOX_API_MODE_PORT", "8080")
     try:
         port = int(port_raw)
     except ValueError:
-        log.error("AICODEBOX_MODE_API_PORT must be a number, got %r", port_raw)
+        log.error("AICODEBOX_API_MODE_PORT must be a number, got %r", port_raw)
         return 1
     try:
         adapter_name = get_adapter().name

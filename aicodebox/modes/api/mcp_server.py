@@ -7,7 +7,7 @@ Tools:
   - write_file(path, text)  → write content (creates parents)
   - delete_file(path)       → remove file (refuses directories)
 
-Auth: bearer token via AICODEBOX_MODE_API_TOKEN, checked at ASGI scope level
+Auth: bearer token via AICODEBOX_MCP_MODE_TOKEN, checked at ASGI scope level
 because FastMCP does not have built-in auth. Token may also arrive as the
 ``apiToken`` query parameter for clients that can't set headers.
 """
@@ -19,11 +19,16 @@ import os
 from pathlib import Path
 from typing import Any
 
-from aicodebox.modes.api.auth import api_token
 from aicodebox.modes.api.workspace import ROOT_WORKSPACE, resolve as resolve_workspace
 from aicodebox.shared.runner import RunSpec, run as run_agent
 
 log = logging.getLogger("api.mcp")
+
+_TOKEN_ENV = "AICODEBOX_MCP_MODE_TOKEN"
+
+
+def mcp_token() -> str:
+    return os.environ.get(_TOKEN_ENV, "") or ""
 
 
 def _resolve_path(path: str) -> str:
@@ -170,7 +175,7 @@ def build_mcp_app() -> Any:
 
 
 def _scope_auth_ok(scope: dict[str, Any]) -> bool:
-    token = api_token()
+    token = mcp_token()
     if not token:
         return True
     headers = {k: v for k, v in scope.get("headers", [])}

@@ -33,7 +33,7 @@ DEFAULT_CONFIG_PATH = Path(os.environ.get("HOME", "/home/aicode")) / ".aicodebox
 
 
 def _config_path() -> Path:
-    p = os.environ.get("AICODEBOX_TELEGRAM_CONFIG")
+    p = os.environ.get("AICODEBOX_TELEGRAM_MODE_CONFIG")
     return Path(p) if p else DEFAULT_CONFIG_PATH
 
 

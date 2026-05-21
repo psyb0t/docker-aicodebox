@@ -10,7 +10,7 @@ from telegram.constants import MessageLimit
 
 logger = logging.getLogger("telegram.utils")
 
-BOT_TOKEN = os.environ.get("AICODEBOX_TELEGRAM_BOT_TOKEN", "")
+BOT_TOKEN = os.environ.get("AICODEBOX_TELEGRAM_MODE_TOKEN", "")
 
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 

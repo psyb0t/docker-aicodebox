@@ -13,7 +13,7 @@ def _write(path, yaml_text):
 
 
 def test_load_missing_file_env_fallback(monkeypatch, tmp_path):
-    monkeypatch.setenv("AICODEBOX_TELEGRAM_CONFIG", str(tmp_path / "absent.yml"))
+    monkeypatch.setenv("AICODEBOX_TELEGRAM_MODE_CONFIG", str(tmp_path / "absent.yml"))
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "-100123")
     cfg = config.load()
     assert cfg["allowed_chats"] == [-100123]
@@ -22,7 +22,7 @@ def test_load_missing_file_env_fallback(monkeypatch, tmp_path):
 
 
 def test_load_missing_file_no_env_returns_empty(monkeypatch, tmp_path):
-    monkeypatch.setenv("AICODEBOX_TELEGRAM_CONFIG", str(tmp_path / "absent.yml"))
+    monkeypatch.setenv("AICODEBOX_TELEGRAM_MODE_CONFIG", str(tmp_path / "absent.yml"))
     cfg = config.load()
     assert cfg == {"allowed_chats": [], "default": {}, "chats": {}}
 
@@ -41,7 +41,7 @@ chats:
     model: claude-sonnet
 """,
     )
-    monkeypatch.setenv("AICODEBOX_TELEGRAM_CONFIG", str(yml))
+    monkeypatch.setenv("AICODEBOX_TELEGRAM_MODE_CONFIG", str(yml))
     cfg = config.load()
     assert cfg["allowed_chats"] == [1, 2]
     assert cfg["default"]["model"] == "glm-4.5-air"
@@ -50,14 +50,14 @@ chats:
 
 def test_load_rejects_non_mapping_top(monkeypatch, tmp_path):
     yml = _write(tmp_path / "tg.yml", "- list_not_map")
-    monkeypatch.setenv("AICODEBOX_TELEGRAM_CONFIG", str(yml))
+    monkeypatch.setenv("AICODEBOX_TELEGRAM_MODE_CONFIG", str(yml))
     with pytest.raises(config.TelegramConfigError):
         config.load()
 
 
 def test_load_rejects_bad_allowed_chats(monkeypatch, tmp_path):
     yml = _write(tmp_path / "tg.yml", "allowed_chats: not_a_list")
-    monkeypatch.setenv("AICODEBOX_TELEGRAM_CONFIG", str(yml))
+    monkeypatch.setenv("AICODEBOX_TELEGRAM_MODE_CONFIG", str(yml))
     with pytest.raises(config.TelegramConfigError):
         config.load()
 

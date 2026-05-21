@@ -43,7 +43,7 @@ That's it. The base owns the surfaces. Your adapter translates "run this prompt"
 | **Runtimes**| Node.js 22 LTS (for agents that ship as npm), Python 3.12, Docker CE + buildx + compose (in case your agent needs to spawn containers).                                                            |
 | **Package** | `aicodebox` — the adapter contract + four mode dispatchers (api / telegram / cron / mcp). Pure Python, zero side effects until you boot a mode.                                                    |
 | **Modes**   | All optional, all opt-in via env vars. Run none or one per container. Exception: telegram + cron can share a container — cron runs in-thread inside the telegram process.                          |
-| **Auth**    | `AICODEBOX_AUTH_TOKENS` (comma-separated bearer list) gates the API + MCP. Empty list = wide open. Telegram has its own allowlist.                                                                  |
+| **Auth**    | `AICODEBOX_API_MODE_TOKEN` gates API mode; `AICODEBOX_MCP_MODE_TOKEN` gates MCP. Single bearer per surface, no fallback between them. Empty = no auth. Telegram has its own allowlist.              |
 | **State**   | Per-chat overrides + cron history go under `$HOME/.aicodebox/`. Bind-mount that path if you want it to outlive the container. The package itself stores nothing.                                    |
 
 ## The adapter contract
@@ -78,25 +78,26 @@ The package gets resolved at first call, cached for the process lifetime. Every 
 
 ## Modes
 
-Modes are controlled by env vars. Set the flag, the entrypoint starts that mode. No flag, no mode. One mode per container — except telegram + cron, which share a process (cron runs in-thread inside telegram). API always wins if set alongside anything else.
+Modes are controlled by env vars. Set the flag, the entrypoint starts that mode. No flag, no mode. **Foreground modes** (API / Telegram / Cron) are mutually exclusive — except telegram + cron, which share a process (cron runs in-thread inside telegram). API wins if set alongside anything else. **MCP mode** is independent — it coexists with any foreground mode, served on its own port (or mounted at `/mcp` inside API).
 
 ### API mode
 
-`AICODEBOX_MODE_API=1`. Boots a FastAPI server on `:8080` with:
+`AICODEBOX_API_MODE=1`. Boots a FastAPI server on `:8080` (override with `AICODEBOX_API_MODE_PORT`) with:
 
 - `POST /run` — sync agent run; returns `{text, raw_stdout, raw_stderr, exit_code}`
 - `POST /run/async` — fire-and-forget; returns a job id
 - `GET /run/{id}` — poll an async job
 - `POST /run/{id}/cancel` — kill an in-flight run
+- `GET|PUT|DELETE /files/{path}` — workspace file CRUD
 - `POST /v1/chat/completions` — OpenAI-compatible (streaming + non-streaming). Plug it into anything that speaks OpenAI.
 - `GET /v1/models` — model list from the adapter
-- `POST /mcp` — MCP server (streamable HTTP transport)
+- `POST /mcp` — MCP server (mounted only when `AICODEBOX_MCP_MODE=1`; auth via `AICODEBOX_MCP_MODE_TOKEN`, separate from the API bearer)
 
-Bearer auth is shared across all of them. Pass `AICODEBOX_AUTH_TOKENS=t1,t2,t3` for rotation.
+Bearer auth for the API surface: `AICODEBOX_API_MODE_TOKEN=<one-token>`. Single token, no rotation list. Empty = no auth.
 
 ### Telegram mode
 
-`AICODEBOX_MODE_TELEGRAM=1` + `AICODEBOX_TELEGRAM_BOT_TOKEN=<bot:token>`. Drop the bot into a chat, talk to it, get answers. Features:
+`AICODEBOX_TELEGRAM_MODE=1` + `AICODEBOX_TELEGRAM_MODE_TOKEN=<bot:token>`. Drop the bot into a chat, talk to it, get answers. Features:
 
 - Text in → agent run → response chunked + Markdown→HTML rendered for Telegram.
 - File uploads (document / photo / video / voice) land in the chat's workspace.
@@ -121,7 +122,7 @@ chats:
 
 ### Cron mode
 
-`AICODEBOX_MODE_CRON=1` + `AICODEBOX_MODE_CRON_FILE=/path/to/cron.yaml`. 6-field croniter schedules, per-job workspace, optional telegram notification.
+`AICODEBOX_CRON_MODE=1` + `AICODEBOX_CRON_MODE_FILE=/path/to/cron.yaml`. 6-field croniter schedules, per-job workspace, optional telegram notification.
 
 ```yaml
 jobs:
@@ -136,29 +137,73 @@ jobs:
 
 Each run gets its own history dir under `$HOME/.aicodebox/cron/history/<workspace-slug>/<YYYYmmdd-HHMMSS>-<job>/` with `meta.json`, `stdout.log`, `stderr.log`, `result.txt`, and (if telegram-notified) `telegram.json`. The next run's prompt gets a "prior runs" hint pointing at that directory — your agent can read its own past output without you wiring it up.
 
-### MCP server
+### MCP mode
 
-`AICODEBOX_MODE_MCP=1`. Standalone MCP server (stdio or HTTP). Same adapter, same auth. Point Claude Desktop / Cursor / whatever at it and the agent shows up as tools.
+`AICODEBOX_MCP_MODE=1`. Exposes the MCP (Model Context Protocol) surface. Coexists with any foreground mode:
+
+| Foreground | MCP placement |
+|---|---|
+| API mode (`AICODEBOX_API_MODE=1`) | mounted at `/mcp` on the API port — no extra process |
+| Telegram / Cron / passthrough | runs as a sidecar uvicorn on `AICODEBOX_MCP_MODE_PORT` (default `8081`) |
+
+Auth: `AICODEBOX_MCP_MODE_TOKEN=<one-token>` — bearer token in the `Authorization: Bearer …` header, or `?apiToken=…` for clients that can't set headers. Empty = no auth. **No fallback to `API_MODE_TOKEN`** — MCP is its own surface with its own bearer.
+
+Point Claude Desktop / Cursor / whatever at the MCP endpoint and the agent shows up as a set of tools (`run_prompt`, `list_files`, `read_file`, `write_file`, `delete_file`).
 
 ## Configuration
 
 Everything's an env var. The base sets sane defaults, your child image overrides.
 
-| Var                              | Default      | What it does                                                                  |
-| -------------------------------- | ------------ | ----------------------------------------------------------------------------- |
-| `AICODEBOX_ADAPTER`              | *required*   | `pkg.module:Class` reference to your `AgentAdapter` subclass                  |
-| `AICODEBOX_AGENT_BINARY`         | *required*   | Name of the agent's CLI binary (for `which` checks, version reports)          |
-| `AICODEBOX_WORKSPACE`            | `/workspace` | Root dir for all per-chat / per-job workspaces                                |
-| `AICODEBOX_AUTH_TOKENS`          | empty        | Comma-separated bearer tokens. Empty = no auth (don't expose to the public)   |
-| `AICODEBOX_MODE_API`             | `0`          | Boot the HTTP API                                                             |
-| `AICODEBOX_MODE_TELEGRAM`        | `0`          | Boot the Telegram bot                                                         |
-| `AICODEBOX_MODE_CRON`            | `0`          | Boot the cron scheduler                                                       |
-| `AICODEBOX_MODE_MCP`             | `0`          | Boot the standalone MCP server                                                |
-| `AICODEBOX_MODE_CRON_FILE`       | -            | Path to the cron yaml (when cron mode is on)                                  |
-| `AICODEBOX_TELEGRAM_BOT_TOKEN`   | -            | Bot token from @BotFather (when telegram mode is on)                          |
-| `AICODEBOX_TELEGRAM_CONFIG`      | `$HOME/.aicodebox/telegram.yml` | Telegram bot config yaml                                   |
-| `AICODEBOX_AVAILABLE_MODELS`     | adapter list | Override the model list exposed via `/v1/models` and `/model` picker          |
-| `AICODEBOX_CONTAINER_NAME`       | -            | Display name in `/status` and logs                                            |
+Env var convention: `<MODE>_MODE` is the on/off flag for that mode; `<MODE>_MODE_<KNOB>` is its config. Vars that aren't mode-scoped (workspace, adapter, container) are bare.
+
+### Adapter & container
+
+| Var | Default | What it does |
+|-----|---------|--------------|
+| `AICODEBOX_ADAPTER` | *required* | `pkg.module:Class` reference to your `AgentAdapter` subclass |
+| `AICODEBOX_AGENT_BINARY` | *required* | Name of the agent's CLI binary (for `which` checks, version reports) |
+| `AICODEBOX_WORKSPACE` | `/workspace` | Root dir for all per-chat / per-job workspaces |
+| `AICODEBOX_CONTAINER_NAME` | `aicodebox` | Display name in `/status`, logs, and per-container state files |
+| `AICODEBOX_AVAILABLE_MODELS` | adapter list | Override the model list exposed via `/v1/models` and `/model` picker (comma-separated) |
+| `AICODEBOX_AVAILABLE_EFFORTS` | adapter list | Override the effort/`--thinking` list exposed via `/effort` (comma-separated) |
+
+### Mode flags
+
+| Var | Default | What it does |
+|-----|---------|--------------|
+| `AICODEBOX_API_MODE` | `0` | Boot the HTTP API server (foreground) |
+| `AICODEBOX_TELEGRAM_MODE` | `0` | Boot the Telegram bot (foreground) |
+| `AICODEBOX_CRON_MODE` | `0` | Boot the cron scheduler (foreground; runs in-thread if telegram is also on) |
+| `AICODEBOX_MCP_MODE` | `0` | Expose the MCP server — mounted at `/mcp` in API mode, or as a sidecar elsewhere |
+
+### API mode config
+
+| Var | Default | What it does |
+|-----|---------|--------------|
+| `AICODEBOX_API_MODE_PORT` | `8080` | Port the API server binds to |
+| `AICODEBOX_API_MODE_TOKEN` | empty | Bearer token for the API surface. Empty = no auth |
+
+### Telegram mode config
+
+| Var | Default | What it does |
+|-----|---------|--------------|
+| `AICODEBOX_TELEGRAM_MODE_TOKEN` | — | Bot token from @BotFather |
+| `AICODEBOX_TELEGRAM_MODE_CONFIG` | `$HOME/.aicodebox/telegram.yml` | Path to the telegram config yaml |
+| `AICODEBOX_TELEGRAM_MODE_OVERRIDES` | `$HOME/.aicodebox/telegram_overrides.json` | Per-chat override store (model/effort/system prompts) |
+
+### Cron mode config
+
+| Var | Default | What it does |
+|-----|---------|--------------|
+| `AICODEBOX_CRON_MODE_FILE` | — | Path to the cron yaml |
+| `AICODEBOX_CRON_MODE_HISTORY_DIR` | `$HOME/.aicodebox/cron/history` | Where each run writes `meta.json`, `stdout.log`, `stderr.log`, `result.txt` |
+
+### MCP mode config
+
+| Var | Default | What it does |
+|-----|---------|--------------|
+| `AICODEBOX_MCP_MODE_PORT` | `8081` | Port the sidecar MCP server binds to (ignored when MCP is mounted inside API) |
+| `AICODEBOX_MCP_MODE_TOKEN` | empty | Bearer token for MCP. Empty = no auth. **No fallback to `API_MODE_TOKEN`** |
 
 ## Child image recipe
 
@@ -183,8 +228,8 @@ Boot it:
 
 ```bash
 docker run --rm -p 8080:8080 \
-  -e AICODEBOX_MODE_API=1 \
-  -e AICODEBOX_AUTH_TOKENS=$(openssl rand -hex 16) \
+  -e AICODEBOX_API_MODE=1 \
+  -e AICODEBOX_API_MODE_TOKEN=$(openssl rand -hex 16) \
   -v "$PWD/workspace:/workspace" \
   your/child-image:latest
 ```

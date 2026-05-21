@@ -26,7 +26,7 @@ RESET_TOKENS: frozenset[str] = frozenset(
 
 
 def _path() -> Path:
-    override = os.environ.get("AICODEBOX_TELEGRAM_OVERRIDES")
+    override = os.environ.get("AICODEBOX_TELEGRAM_MODE_OVERRIDES")
     return Path(override) if override else _DEFAULT_PATH
 
 

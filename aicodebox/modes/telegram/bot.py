@@ -764,7 +764,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 def main() -> int:
     configure_logging()
     if not BOT_TOKEN:
-        print("AICODEBOX_TELEGRAM_BOT_TOKEN not set", file=sys.stderr)
+        print("AICODEBOX_TELEGRAM_MODE_TOKEN not set", file=sys.stderr)
         return 1
 
     try:
@@ -786,10 +786,10 @@ def main() -> int:
         len(chat_overrides),
     )
 
-    if os.environ.get("AICODEBOX_MODE_CRON") == "1":
-        cron_file = os.environ.get("AICODEBOX_MODE_CRON_FILE")
+    if os.environ.get("AICODEBOX_CRON_MODE") == "1":
+        cron_file = os.environ.get("AICODEBOX_CRON_MODE_FILE")
         if not cron_file:
-            log.error("AICODEBOX_MODE_CRON=1 set but AICODEBOX_MODE_CRON_FILE missing")
+            log.error("AICODEBOX_CRON_MODE=1 set but AICODEBOX_CRON_MODE_FILE missing")
             return 1
         from aicodebox.modes.cron.config import CronConfigError as _CronCfgErr
         from aicodebox.modes.cron.config import load as load_cron

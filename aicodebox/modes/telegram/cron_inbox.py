@@ -6,7 +6,7 @@ when a user reply quotes a cron-triggered message and inject the original
 job context into the follow-up prompt.
 
 Storage path: ``~/.aicodebox/cron/telegram_messages.json``. Override the
-parent dir via ``AICODEBOX_CRON_HISTORY_DIR``.
+parent dir via ``AICODEBOX_CRON_MODE_HISTORY_DIR``.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ log = logging.getLogger("telegram.cron_inbox")
 
 
 def _inbox_path() -> Path:
-    override = os.environ.get("AICODEBOX_CRON_HISTORY_DIR")
+    override = os.environ.get("AICODEBOX_CRON_MODE_HISTORY_DIR")
     if override:
         return Path(override) / "telegram_messages.json"
     home = Path(os.environ.get("HOME", "/home/aicode"))

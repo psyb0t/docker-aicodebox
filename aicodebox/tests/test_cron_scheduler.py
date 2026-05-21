@@ -218,7 +218,7 @@ def test_run_job_history_hint_injected_into_append_system_prompt(
 
 
 def test_notify_telegram_no_token_skips(monkeypatch, tmp_path):
-    monkeypatch.delenv("AICODEBOX_TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("AICODEBOX_TELEGRAM_MODE_TOKEN", raising=False)
     job = CronJob(
         name="ping",
         schedule="*/1 * * * * *",
@@ -232,7 +232,7 @@ def test_notify_telegram_no_token_skips(monkeypatch, tmp_path):
 
 
 def test_notify_telegram_records_history_dir(monkeypatch, tmp_path):
-    monkeypatch.setenv("AICODEBOX_TELEGRAM_BOT_TOKEN", "fake")
+    monkeypatch.setenv("AICODEBOX_TELEGRAM_MODE_TOKEN", "fake")
     monkeypatch.setattr(scheduler, "HISTORY_ROOT", tmp_path)
     monkeypatch.setattr(scheduler, "TELEGRAM_MESSAGES_FILE", tmp_path / "tm.json")
     monkeypatch.setattr(scheduler, "_post_to_telegram", lambda *a, **k: 7777)

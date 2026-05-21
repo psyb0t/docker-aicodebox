@@ -1,4 +1,4 @@
-"""Bearer-token auth for API mode. If AICODEBOX_MODE_API_TOKEN is unset,
+"""Bearer-token auth for API mode. If AICODEBOX_API_MODE_TOKEN is unset,
 no auth is required."""
 
 from __future__ import annotations
@@ -7,7 +7,7 @@ import os
 
 from fastapi import Header, HTTPException
 
-_TOKEN_ENV = "AICODEBOX_MODE_API_TOKEN"
+_TOKEN_ENV = "AICODEBOX_API_MODE_TOKEN"
 
 
 def api_token() -> str:

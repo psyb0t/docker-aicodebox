@@ -33,5 +33,5 @@ def test_load_cron_message_honours_env(monkeypatch, tmp_path):
     cron_dir = tmp_path / "cron"
     cron_dir.mkdir()
     (cron_dir / "telegram_messages.json").write_text(json.dumps({"100": {"job_name": "rota"}}))
-    monkeypatch.setenv("AICODEBOX_CRON_HISTORY_DIR", str(cron_dir))
+    monkeypatch.setenv("AICODEBOX_CRON_MODE_HISTORY_DIR", str(cron_dir))
     assert cron_inbox.load_cron_message(100) == {"job_name": "rota"}
