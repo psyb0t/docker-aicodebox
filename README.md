@@ -84,6 +84,8 @@ Modes are controlled by env vars. Set the flag, the entrypoint starts that mode.
 
 `AICODEBOX_API_MODE=1`. Boots a FastAPI server on `:8080` (override with `AICODEBOX_API_MODE_PORT`) with:
 
+> **Required:** `AICODEBOX_AVAILABLE_MODELS=<csv>` — `/v1/models` needs a real list, and there's no safe fallback (the adapter name isn't a model name). API mode refuses to boot without it. Pick the model ids your configured provider actually serves.
+
 - `POST /run` — sync agent run; returns `{text, raw_stdout, raw_stderr, exit_code}`
 - `POST /run/async` — fire-and-forget; returns a job id
 - `GET /run/{id}` — poll an async job
@@ -164,7 +166,7 @@ Env var convention: `<MODE>_MODE` is the on/off flag for that mode; `<MODE>_MODE
 | `AICODEBOX_AGENT_BINARY` | *required* | Name of the agent's CLI binary (for `which` checks, version reports) |
 | `AICODEBOX_WORKSPACE` | `/workspace` | Root dir for all per-chat / per-job workspaces |
 | `AICODEBOX_CONTAINER_NAME` | `aicodebox` | Display name in `/status`, logs, and per-container state files |
-| `AICODEBOX_AVAILABLE_MODELS` | adapter list | Override the model list exposed via `/v1/models` and `/model` picker (comma-separated) |
+| `AICODEBOX_AVAILABLE_MODELS` | — | **Required for API mode.** CSV list returned by `/v1/models` and shown in the telegram `/model` picker. API mode refuses to boot without it; telegram `/model` picker degrades to a "set this env var" reply. |
 | `AICODEBOX_AVAILABLE_EFFORTS` | adapter list | Override the effort/`--thinking` list exposed via `/effort` (comma-separated) |
 
 ### Mode flags

@@ -267,19 +267,28 @@ def _strip_provider_prefix(model: str) -> str:
 
 @router.get("/openai/v1/models")
 def models() -> dict[str, Any]:
-    try:
-        adapter_name = get_adapter().name
-    except RuntimeError:
-        adapter_name = "agent"
+    from aicodebox.shared.choices import available_models
+
+    # Empty list is rejected at API mode boot — see server.main(). Reaching
+    # this code path with an empty list means env got mutated post-boot;
+    # surface that as a 503 rather than handing the OAI client a bogus
+    # "pi"/adapter-name model that isn't a real model.
+    ids = available_models()
+    if not ids:
+        raise HTTPException(
+            status_code=503,
+            detail="no models configured; set AICODEBOX_AVAILABLE_MODELS",
+        )
     return {
         "object": "list",
         "data": [
             {
-                "id": adapter_name,
+                "id": mid,
                 "object": "model",
                 "created": 0,
                 "owned_by": "aicodebox",
-            },
+            }
+            for mid in ids
         ],
     }
 
