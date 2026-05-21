@@ -47,6 +47,8 @@ from telegram.ext import (
 )
 
 from aicodebox.adapters import get_adapter
+from aicodebox.shared.choices import available_efforts as _available_efforts
+from aicodebox.shared.choices import available_models as _available_models
 from aicodebox.modes.telegram import overrides as _overrides
 from aicodebox.modes.telegram.config import TelegramConfigError, get_chat_config, is_allowed
 from aicodebox.modes.telegram.config import load as load_config
@@ -89,26 +91,6 @@ _executor = ThreadPoolExecutor(max_workers=4)
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
-
-
-def _available_models() -> list[str]:
-    env = os.environ.get("AICODEBOX_AVAILABLE_MODELS")
-    if env:
-        return [m.strip() for m in env.split(",") if m.strip()]
-    try:
-        return list(get_adapter().available_models)
-    except RuntimeError:
-        return []
-
-
-def _available_efforts() -> list[str]:
-    env = os.environ.get("AICODEBOX_AVAILABLE_EFFORTS")
-    if env:
-        return [m.strip() for m in env.split(",") if m.strip()]
-    try:
-        return list(get_adapter().available_thinking_levels)
-    except RuntimeError:
-        return []
 
 
 def _merged_chat_config(chat_id: int) -> dict[str, Any]:
@@ -617,6 +599,16 @@ async def _cmd_choice(
     chat = update.effective_chat
     msg = update.effective_message
     if not user or not chat or not msg or not is_allowed(config, chat.id, user.id):
+        return
+    if not options:
+        env_var = {
+            "model": "AICODEBOX_AVAILABLE_MODELS",
+            "effort": "AICODEBOX_AVAILABLE_EFFORTS",
+        }.get(key, "AICODEBOX_AVAILABLE_*")
+        await msg.reply_text(
+            f"no {label}s configured. set {env_var} (comma-separated) or have "
+            f"the adapter declare the list."
+        )
         return
     if context.args:
         choice = context.args[0].strip().lower()

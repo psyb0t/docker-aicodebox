@@ -257,11 +257,21 @@ def main() -> int:
     configure_logging()
     import uvicorn
 
+    from aicodebox.shared.choices import available_models
+
     port_raw = os.environ.get("AICODEBOX_API_MODE_PORT", "8080")
     try:
         port = int(port_raw)
     except ValueError:
         log.error("AICODEBOX_API_MODE_PORT must be a number, got %r", port_raw)
+        return 1
+    if not available_models():
+        log.error(
+            "api: no models configured — set AICODEBOX_AVAILABLE_MODELS "
+            "(comma-separated) or have the adapter declare available_models. "
+            "/v1/models has no usable fallback (the adapter name is not a "
+            "model name)."
+        )
         return 1
     try:
         adapter_name = get_adapter().name
