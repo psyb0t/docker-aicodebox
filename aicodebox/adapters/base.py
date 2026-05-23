@@ -124,9 +124,16 @@ class AgentAdapter:
         Default impl accepts everything; override to reject combinations the
         agent does not support (e.g. an agent without native JSON schema must
         reject ``output_format=json`` combined with ``json_schema``)."""
-        if req.output_format not in ("text", "json"):
+        if req.output_format not in ("text", "json", "json-verbose"):
             raise ValueError(
-                f"output_format={req.output_format!r} invalid; choose text|json"
+                f"output_format={req.output_format!r} invalid; "
+                "choose text | json | json-verbose"
+            )
+        if req.output_format == "json-verbose" and req.json_schema is not None:
+            raise ValueError(
+                "jsonSchema is incompatible with output_format=json-verbose "
+                "— verbose is an unstructured adapter event log, not a "
+                "schema-validated payload"
             )
 
     def build_argv(self, req: RunRequest) -> list[str]:
@@ -167,6 +174,27 @@ class AgentAdapter:
         value, err = parse_json_response(result.text or "", req.json_schema)
         result.parsed = value
         result.parse_error = err
+
+    # ── event log (post-hoc parse of completed stdout) ───────────────────────
+
+    def parse_events(
+        self, stdout: str, req: RunRequest,
+    ) -> list[dict[str, Any]]:
+        """Extract structured events from a completed run's stdout.
+
+        Returned by ``/run`` as the ``events`` field whenever the list is
+        non-empty — gives clients structured access to tool calls / thinking
+        blocks / per-turn metadata without forcing them to opt into raw
+        stdout. Default: empty list (plain-text adapters have no events).
+
+        Adapters whose binaries emit a structured stream (pi's
+        ``--output-format=json-verbose`` for example) override this to JSON-
+        decode each line and return the parsed objects. Lines that fail to
+        decode are dropped silently — events is a best-effort surface, not
+        the canonical transcript (use ``includeRaw`` if you need the bytes).
+        """
+        del stdout, req
+        return []
 
     # ── streaming ────────────────────────────────────────────────────────────
 

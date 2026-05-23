@@ -48,7 +48,15 @@ def validate_spec(spec: RunSpec) -> None:
     get_adapter().validate(req)
 
 
-def _to_request(spec: RunSpec, proc_hook: ProcHook = None) -> RunRequest:
+def spec_to_request(
+    spec: RunSpec, proc_hook: ProcHook = None,
+) -> RunRequest:
+    """Convert a mode-facing RunSpec into an adapter-facing RunRequest.
+
+    Public — modes that need a RunRequest for non-run code paths (e.g.
+    ``adapter.parse_events`` invoked after a completed run) reuse this so
+    the conversion stays in one place.
+    """
     model = spec.model or os.environ.get("ANTHROPIC_MODEL") or None
     return RunRequest(
         prompt=spec.prompt,
@@ -67,6 +75,10 @@ def _to_request(spec: RunSpec, proc_hook: ProcHook = None) -> RunRequest:
         tools_allowlist=spec.tools_allowlist,
         no_tools=spec.no_tools,
     )
+
+
+# Backwards-compat alias for internal callers.
+_to_request = spec_to_request
 
 
 def run(spec: RunSpec, proc_hook: ProcHook = None) -> RunResult:

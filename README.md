@@ -52,8 +52,7 @@ Everything routes through one interface. You implement it once per agent.
 
 ```python
 # mypkg/adapter.py
-from aicodebox.adapters.base import AgentAdapter
-from aicodebox.shared.runner import RunRequest, RunResult
+from aicodebox.adapters.base import AgentAdapter, RunRequest, RunResult, StreamEvent
 
 class MyAdapter(AgentAdapter):
     name = "my-agent"
@@ -66,8 +65,24 @@ class MyAdapter(AgentAdapter):
         if req.workspace: argv += ["--cwd", req.workspace]
         return argv
 
-    def parse_result(self, stdout: str, stderr: str, code: int) -> RunResult:
-        return RunResult(text=stdout, raw_stdout=stdout, raw_stderr=stderr, exit_code=code)
+    def parse_output(self, stdout: str, req: RunRequest) -> RunResult:
+        # Required. Convert raw stdout into a normalized result. raw_stdout /
+        # raw_stderr / exit_code are filled in by the runner — set ``text``
+        # (and optionally ``parsed`` / ``usage`` / ``session_id``).
+        return RunResult(text=stdout.strip(), raw_stdout="", raw_stderr="", exit_code=0)
+
+    # Optional: structured stream events. The default is "one delta per
+    # stdout line" — override only if your binary emits a JSON event stream
+    # and you want per-token / per-tool granularity in OAI streaming.
+    def parse_stream_event(self, line: str, req: RunRequest) -> StreamEvent | None:
+        return StreamEvent(type="delta", text=line + "\n") if line else None
+
+    # Optional: post-hoc events surfaced in /run's ``events`` field when
+    # the caller requests ``outputFormat=json-verbose``. Runs once over
+    # completed stdout. Plain-text adapters return [] (the default) and
+    # users avoid json-verbose for them.
+    def parse_events(self, stdout: str, req: RunRequest) -> list[dict]:
+        return []
 ```
 
 ```dockerfile
@@ -86,10 +101,15 @@ Modes are controlled by env vars. Set the flag, the entrypoint starts that mode.
 
 > **Required:** `AICODEBOX_AVAILABLE_MODELS=<csv>` — `/v1/models` needs a real list, and there's no safe fallback (the adapter name isn't a model name). API mode refuses to boot without it. Pick the model ids your configured provider actually serves.
 
-- `POST /run` — sync agent run; returns `{text, raw_stdout, raw_stderr, exit_code}`
-- `POST /run/async` — fire-and-forget; returns a job id
-- `GET /run/{id}` — poll an async job
-- `POST /run/{id}/cancel` — kill an in-flight run
+- `POST /run` — sync agent run. The `outputFormat` field picks the response shape (one dial, three modes, no leakage across):
+  - `"text"` (default) → `{runId, workspace, exitCode, text, [sessionId], [usage]}`. Just the assistant's prose.
+  - `"json"` → on success `{... , parsed}` where `parsed` is the decoded object (validated against `jsonSchema` if supplied). On parse / schema failure the wrapper re-prompts the agent up to 3 times with the prior bad output + the specific error; if all attempts fail you get `{... , text, parseError, jsonRetries}`. The raw JSON string is **not** included on success — `parsed` is the canonical form.
+  - `"json-verbose"` → `{... , events}` — list of structured dicts the adapter pulled from stdout (tool calls, thinking blocks, per-turn metadata). Incompatible with `jsonSchema`. `text` is suppressed; consumers parse the event stream themselves.
+
+  Set `"includeRaw": true` on the request to also receive `stdout` + `stderr`. `stderr` is always included automatically when `exitCode != 0` so the failure has a diagnostic.
+- `POST /run` with `"async": true` or `"fireAndForget": true` — returns `{runId, status: "running"}` immediately
+- `GET /run/result?runId=<id>` — poll an async run (same payload shape as sync)
+- `DELETE /run/{id}` — kill an in-flight run
 - `GET|PUT|DELETE /files/{path}` — workspace file CRUD
 - `POST /v1/chat/completions` — OpenAI-compatible (streaming + non-streaming). Plug it into anything that speaks OpenAI.
 - `GET /v1/models` — model list from the adapter
