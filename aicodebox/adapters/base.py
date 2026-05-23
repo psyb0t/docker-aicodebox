@@ -55,6 +55,29 @@ class RunResult:
     usage: dict[str, Any] | None = None
 
 
+@dataclass
+class StreamEvent:
+    """One unit of output from a streaming agent invocation.
+
+    Emitted by ``runner.run_stream`` after passing a raw stdout line through
+    ``AgentAdapter.parse_stream_event``. The mode layer (OAI streaming,
+    telegram live-typing, etc.) consumes these and renders them in its own
+    transport.
+
+    Types:
+      ``delta``    — incremental assistant text. ``text`` carries the chunk.
+      ``session``  — session/conversation id. ``data["id"]``.
+      ``usage``    — token counts. ``data`` mirrors RunResult.usage shape.
+      ``stop``     — terminal event. ``data["reason"]`` is the finish reason.
+      ``error``    — non-fatal parse / runtime warning. ``text`` carries msg.
+      ``raw``      — unparsed line (debug). Modes typically ignore.
+    """
+
+    type: str
+    text: str = ""
+    data: dict | None = None
+
+
 _FENCE_RE = re.compile(r"^\s*```(?:json)?\s*\n?|\n?```\s*$", re.IGNORECASE)
 
 
@@ -144,6 +167,28 @@ class AgentAdapter:
         value, err = parse_json_response(result.text or "", req.json_schema)
         result.parsed = value
         result.parse_error = err
+
+    # ── streaming ────────────────────────────────────────────────────────────
+
+    def parse_stream_event(
+        self, line: str, req: RunRequest,
+    ) -> StreamEvent | None:
+        """Parse one raw stdout line from a streaming run.
+
+        Called once per line by ``runner.run_stream``. Return ``None`` to
+        skip the line (e.g. structured-stream adapters that filter heartbeat
+        or non-content events).
+
+        Default behaviour: every non-empty line becomes a text delta with a
+        trailing newline restored. Adapters whose binaries emit a structured
+        stream (e.g. pi's ``--output-format=json-verbose``) override this to
+        decode JSON events and emit typed StreamEvents (``delta``, ``usage``,
+        ``session``, ``stop``).
+        """
+        del req
+        if not line:
+            return None
+        return StreamEvent(type="delta", text=f"{line}\n")
 
     # ── interactive / passthrough ────────────────────────────────────────────
 

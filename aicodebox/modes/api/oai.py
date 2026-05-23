@@ -9,9 +9,10 @@ envelope. Supports:
 - multimodal ``image_url`` content (data URLs decoded; http(s) URLs fetched
   through an SSRF guard) — saved under ``_oai_uploads`` and referenced by
   absolute path in the prompt
-- streaming (``stream=true``) via a single chunk + ``[DONE]`` envelope. The
-  adapter is expected to surface incremental output through future adapter
-  hooks; for now this layer is agent-agnostic and synchronous.
+- streaming (``stream=true``): runs the adapter via
+  ``runner.run_stream`` and forwards each ``StreamEvent`` of type ``delta``
+  as its own ``chat.completion.chunk``. Adapters that don't override
+  ``parse_stream_event`` get the default line-per-delta behaviour.
 - reject ``tools`` / ``tool_choice`` / ``response_format=json_object`` with
   400 so clients fall back to ``/run`` rather than silently losing capability
 """
@@ -44,7 +45,7 @@ from aicodebox.modes.api.workspace import (
     WorkspaceError,
     resolve as resolve_workspace,
 )
-from aicodebox.shared.runner import RunSpec, run as run_agent
+from aicodebox.shared.runner import RunSpec, run as run_agent, run_stream
 
 log = logging.getLogger("api.oai")
 
@@ -265,6 +266,24 @@ def _strip_provider_prefix(model: str) -> str:
     return model
 
 
+def _usage_tokens(usage: dict[str, Any] | None, *keys: str) -> int:
+    """Read the first present + truthy key from usage as an int.
+
+    Different adapters surface token counts under different conventions
+    (``input_tokens`` / ``inputTokens`` / ``input``). Try each in order;
+    return 0 if none match."""
+    if not usage:
+        return 0
+    for key in keys:
+        value = usage.get(key)
+        if value:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                continue
+    return 0
+
+
 @router.get("/openai/v1/models")
 def models() -> dict[str, Any]:
     from aicodebox.shared.choices import available_models
@@ -387,8 +406,8 @@ async def chat_completions(
         raise HTTPException(status_code=500, detail=err)
 
     text, usage, _stop = ret if isinstance(ret, tuple) else (ret, {}, None)
-    in_tok = int(usage.get("input_tokens", 0) or usage.get("inputTokens", 0) or 0)
-    out_tok = int(usage.get("output_tokens", 0) or usage.get("outputTokens", 0) or 0)
+    in_tok = _usage_tokens(usage, "input_tokens", "inputTokens", "input")
+    out_tok = _usage_tokens(usage, "output_tokens", "outputTokens", "output")
 
     return {
         "id": cid,
@@ -410,7 +429,7 @@ async def chat_completions(
     }
 
 
-# ── streaming (fake-stream: single chunk + [DONE]) ───────────────────────────
+# ── streaming (one SSE chunk per adapter StreamEvent) ────────────────────────
 
 
 def _sse_chunk(
@@ -454,28 +473,32 @@ async def _stream_response(
             no_continue=no_continue,
             thinking=thinking,
         )
-
-        def _do(_rid: str) -> str:
-            result = run_agent(spec)
-            if result.exit_code != 0:
-                log.warning(
-                    "oai stream: rc=%s stderr=%r",
-                    result.exit_code, result.raw_stderr[:200],
-                )
-            return result.text or ""
-
+        finish: str = "stop"
         try:
-            yield _sse_chunk(cid, created, req_model,
-                             {"role": "assistant", "content": ""})
-            _, text, err = await asyncio.get_event_loop().run_in_executor(
-                None, lambda: RUNS.run_sync(workspace, _do),
+            yield _sse_chunk(
+                cid, created, req_model,
+                {"role": "assistant", "content": ""},
             )
-            if err:
-                yield _sse_chunk(cid, created, req_model,
-                                 {"content": f"[error: {err}]"})
-            elif text:
-                yield _sse_chunk(cid, created, req_model, {"content": text})
-            yield _sse_chunk(cid, created, req_model, {}, "stop")
+            async for event in run_stream(spec):
+                if event.type == "delta" and event.text:
+                    yield _sse_chunk(
+                        cid, created, req_model, {"content": event.text},
+                    )
+                    continue
+                if event.type == "error":
+                    finish = "error"
+                    log.warning(
+                        "oai stream: adapter error: %s", event.text[:200],
+                    )
+                    yield _sse_chunk(
+                        cid, created, req_model,
+                        {"content": f"[error: {event.text}]"},
+                    )
+                    continue
+                if event.type == "stop" and event.data:
+                    finish = str(event.data.get("reason") or finish)
+                    continue
+            yield _sse_chunk(cid, created, req_model, {}, finish)
             yield "data: [DONE]\n\n"
         finally:
             RUNS.release_workspace(workspace)
