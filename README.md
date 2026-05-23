@@ -78,9 +78,9 @@ class MyAdapter(AgentAdapter):
         return StreamEvent(type="delta", text=line + "\n") if line else None
 
     # Optional: post-hoc events surfaced in /run's ``events`` field when
-    # the caller requests ``outputFormat=json-verbose``. Runs once over
-    # completed stdout. Plain-text adapters return [] (the default) and
-    # users avoid json-verbose for them.
+    # the caller requests ``verbose=true``. Runs once over completed stdout.
+    # Plain-text adapters return [] (the default) — verbose mode just won't
+    # carry events for those adapters.
     def parse_events(self, stdout: str, req: RunRequest) -> list[dict]:
         return []
 ```
@@ -101,10 +101,11 @@ Modes are controlled by env vars. Set the flag, the entrypoint starts that mode.
 
 > **Required:** `AICODEBOX_AVAILABLE_MODELS=<csv>` — `/v1/models` needs a real list, and there's no safe fallback (the adapter name isn't a model name). API mode refuses to boot without it. Pick the model ids your configured provider actually serves.
 
-- `POST /run` — sync agent run. The `outputFormat` field picks the response shape (one dial, three modes, no leakage across):
-  - `"text"` (default) → `{runId, workspace, exitCode, text, [sessionId], [usage]}`. Just the assistant's prose.
-  - `"json"` → on success `{... , parsed}` where `parsed` is the decoded object (validated against `jsonSchema` if supplied). On parse / schema failure the wrapper re-prompts the agent up to 3 times with the prior bad output + the specific error; if all attempts fail you get `{... , text, parseError, jsonRetries}`. The raw JSON string is **not** included on success — `parsed` is the canonical form.
-  - `"json-verbose"` → `{... , events}` — list of structured dicts the adapter pulled from stdout (tool calls, thinking blocks, per-turn metadata). Incompatible with `jsonSchema`. `text` is suppressed; consumers parse the event stream themselves.
+- `POST /run` — sync agent run. The response shape is driven by two request flags:
+  - **Default** (`verbose=false`, no `jsonSchema`) → `{runId, workspace, exitCode, text}`. Lean — just the assistant's prose.
+  - **`"verbose": true`** → `{runId, workspace, exitCode, text, events, sessionId, usage}`. `events` is the adapter's structured event log (tool calls, thinking blocks, per-turn metadata). `verbose` is about wire-format richness, not how the LLM should respond — the agent runs in its native verbose mode under the hood.
+  - **`"jsonSchema": {...}`** → the agent is asked to emit JSON, which is decoded + validated against the schema. On success: `{... , json}` where `json` is the parsed object. On parse / schema-validation failure the wrapper re-prompts the agent up to 3 times with the prior bad output + the specific error; if all attempts still fail you get `{... , text, parseError, jsonRetries}`. The raw JSON string is **not** surfaced on success — `json` is the canonical form.
+  - **`jsonSchema` + `verbose=true`** → composes. The agent runs in verbose mode (so the response carries the full event log + sessionId + usage) AND the wrapper validates the final assistant text against the schema with the same 3-retry self-correction. The validated object is surfaced alongside `events` as `json`; the caller can read either — the schema-validated JSON lives in `events` as the final assistant message AND as the top-level `json` field.
 
   Set `"includeRaw": true` on the request to also receive `stdout` + `stderr`. `stderr` is always included automatically when `exitCode != 0` so the failure has a diagnostic.
 - `POST /run` with `"async": true` or `"fireAndForget": true` — returns `{runId, status: "running"}` immediately

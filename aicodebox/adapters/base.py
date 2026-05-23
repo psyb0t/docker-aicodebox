@@ -121,19 +121,17 @@ class AgentAdapter:
     def validate(self, req: RunRequest) -> None:
         """Raise ValueError if the adapter cannot honour this request.
 
-        Default impl accepts everything; override to reject combinations the
-        agent does not support (e.g. an agent without native JSON schema must
-        reject ``output_format=json`` combined with ``json_schema``)."""
+        Default impl accepts everything; override to reject combinations
+        the agent does not support. ``json_schema`` is valid with both
+        ``output_format=json`` (clean JSON-only output) and
+        ``output_format=json-verbose`` (event stream where the final
+        assistant turn carries the schema-validated JSON the caller asked
+        for) — the wrapper validates ``result.text`` either way and
+        retries on parse / schema failure."""
         if req.output_format not in ("text", "json", "json-verbose"):
             raise ValueError(
                 f"output_format={req.output_format!r} invalid; "
                 "choose text | json | json-verbose"
-            )
-        if req.output_format == "json-verbose" and req.json_schema is not None:
-            raise ValueError(
-                "jsonSchema is incompatible with output_format=json-verbose "
-                "— verbose is an unstructured adapter event log, not a "
-                "schema-validated payload"
             )
 
     def build_argv(self, req: RunRequest) -> list[str]:

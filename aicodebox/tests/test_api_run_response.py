@@ -129,7 +129,7 @@ def test_nonzero_exit_always_includes_stderr(
 # ── events field surfaces when adapter populates it ──────────────────────────
 
 
-def test_events_field_populated_when_adapter_emits(
+def test_verbose_mode_includes_events_text_and_metadata(
     recording_adapter, monkeypatch, tmp_path,
 ):
     recording_adapter.events_to_emit = [
@@ -138,6 +138,7 @@ def test_events_field_populated_when_adapter_emits(
     ]
     _patch_run_agent(monkeypatch, RunResult(
         text="hi", raw_stdout="...", raw_stderr="", exit_code=0,
+        session_id="sess-abc", usage={"input_tokens": 10, "output_tokens": 4},
     ))
     from aicodebox.modes.api.server import _invoke
 
@@ -145,28 +146,30 @@ def test_events_field_populated_when_adapter_emits(
         _build_spec(str(tmp_path), output_format="json-verbose"),
         "rid-4", include_raw=False,
     )
+    assert payload["text"] == "hi"  # verbose still includes prose
     assert payload["events"] == [
         {"type": "tool_use", "name": "Read", "input": {"path": "/x"}},
         {"type": "assistant", "text": "hi"},
     ]
-    assert "text" not in payload  # json-verbose suppresses text
+    assert payload["sessionId"] == "sess-abc"
+    assert payload["usage"] == {"input_tokens": 10, "output_tokens": 4}
 
 
-def test_events_in_text_mode_are_suppressed(
-    recording_adapter, monkeypatch, tmp_path,
-):
-    """text mode never surfaces events — even if the adapter would emit
-    them — so callers get exactly one well-defined payload shape per
-    output_format value."""
+def test_text_mode_is_lean(recording_adapter, monkeypatch, tmp_path):
+    """text mode returns only text + operational fields — no events,
+    sessionId, or usage even if the adapter populates them."""
     recording_adapter.events_to_emit = [{"type": "assistant", "text": "hi"}]
     _patch_run_agent(monkeypatch, RunResult(
         text="hi", raw_stdout="...", raw_stderr="", exit_code=0,
+        session_id="sess-abc", usage={"input_tokens": 10},
     ))
     from aicodebox.modes.api.server import _invoke
 
     payload = _invoke(_build_spec(str(tmp_path)), "rid-5", include_raw=False)
     assert payload["text"] == "hi"
     assert "events" not in payload
+    assert "sessionId" not in payload
+    assert "usage" not in payload
 
 
 # ── adapter.parse_events crash is swallowed ──────────────────────────────────
@@ -190,6 +193,7 @@ def test_parse_events_exception_does_not_break_response(
     )
     # crash in parse_events → events=[] (swallowed), other fields intact
     assert payload["events"] == []
+    assert payload["text"] == "ok"
     assert payload["exitCode"] == 0
 
 
@@ -197,12 +201,16 @@ def test_parse_events_exception_does_not_break_response(
 
 
 def _build_json_spec(workspace: str, schema: dict | None = None):
+    """Construct a spec for the json output path. v0.5.0 wires
+    ``output_format='json'`` only when the API caller set ``jsonSchema``,
+    so the spec always carries a schema (defaults to a permissive one
+    when the test doesn't care about schema validation specifically)."""
     from aicodebox.shared.runner import RunSpec
     return RunSpec(
         prompt="give me json",
         workspace=workspace,
         output_format="json",
-        json_schema=schema,
+        json_schema=schema if schema is not None else {"type": "object"},
     )
 
 
@@ -235,7 +243,7 @@ def test_json_mode_success_no_retries(recording_adapter, monkeypatch, tmp_path):
     from aicodebox.modes.api.server import _invoke
 
     payload = _invoke(_build_json_spec(str(tmp_path)), "rid-j1", include_raw=False)
-    assert payload["parsed"] == {"answer": 42}
+    assert payload["json"] == {"answer": 42}
     assert "parseError" not in payload
     assert "jsonRetries" not in payload
     assert "text" not in payload  # raw text suppressed in json success
@@ -256,7 +264,7 @@ def test_json_mode_succeeds_on_retry(recording_adapter, monkeypatch, tmp_path):
     from aicodebox.modes.api.server import _invoke
 
     payload = _invoke(_build_json_spec(str(tmp_path)), "rid-j2", include_raw=False)
-    assert payload["parsed"] == {"ok": True}
+    assert payload["json"] == {"ok": True}
     assert "parseError" not in payload
     assert payload["jsonRetries"] == 1
     assert calls["n"] == 2  # initial + 1 retry
@@ -272,7 +280,7 @@ def test_json_mode_exhausts_retries(recording_adapter, monkeypatch, tmp_path):
     from aicodebox.modes.api.server import _invoke
 
     payload = _invoke(_build_json_spec(str(tmp_path)), "rid-j3", include_raw=False)
-    assert "parsed" not in payload
+    assert "json" not in payload
     assert payload["parseError"]
     assert payload["text"] == "still not json"
     assert payload["jsonRetries"] == 3
@@ -318,6 +326,109 @@ def test_json_mode_retry_aborts_when_attempt_exits_nonzero(
     assert calls["n"] == 2
 
 
+# ── _derive_output_format: API flags → adapter mode mapping ──────────────────
+
+
+def test_derive_output_format_text_when_neither_flag_set():
+    from aicodebox.modes.api.server import RunBody, _derive_output_format
+    body = RunBody(prompt="x")
+    assert _derive_output_format(body) == "text"
+
+
+def test_derive_output_format_json_when_schema_set():
+    from aicodebox.modes.api.server import RunBody, _derive_output_format
+    body = RunBody(prompt="x", jsonSchema={"type": "object"})
+    assert _derive_output_format(body) == "json"
+
+
+def test_derive_output_format_json_verbose_when_verbose_true():
+    from aicodebox.modes.api.server import RunBody, _derive_output_format
+    body = RunBody(prompt="x", verbose=True)
+    assert _derive_output_format(body) == "json-verbose"
+
+
+def test_derive_output_format_schema_with_verbose_returns_json_verbose():
+    """jsonSchema + verbose=true is a valid combo — agent runs in
+    json-verbose mode (so the caller still gets the full event log) and
+    the wrapper layer validates+retries the schema on top."""
+    from aicodebox.modes.api.server import RunBody, _derive_output_format
+    body = RunBody(prompt="x", jsonSchema={"type": "object"}, verbose=True)
+    assert _derive_output_format(body) == "json-verbose"
+
+
+def _build_verbose_schema_spec(workspace: str, schema: dict | None = None):
+    """Spec for verbose+schema combo — agent runs in json-verbose mode
+    (events surface) AND the wrapper validates the final assistant text
+    against the schema with the same 3-retry self-correction."""
+    from aicodebox.shared.runner import RunSpec
+    return RunSpec(
+        prompt="give me json",
+        workspace=workspace,
+        output_format="json-verbose",
+        json_schema=schema if schema is not None else {"type": "object"},
+    )
+
+
+def test_verbose_plus_schema_returns_both_json_and_events(
+    recording_adapter, monkeypatch, tmp_path,
+):
+    """jsonSchema + verbose=true: response carries the full verbose
+    surface (text+events+sessionId+usage) AND the schema-validated
+    ``json`` field. The caller can read either."""
+    recording_adapter.events_to_emit = [
+        {"type": "tool_use", "name": "Read"},
+        {"type": "assistant", "text": '{"answer": 42}'},
+    ]
+    _patch_run_agent_sequence(monkeypatch, [RunResult(
+        text='{"answer": 42}',
+        raw_stdout='{"answer": 42}', raw_stderr="", exit_code=0,
+        session_id="sess-xyz", usage={"input_tokens": 5},
+    )])
+    from aicodebox.modes.api.server import _invoke
+
+    payload = _invoke(
+        _build_verbose_schema_spec(str(tmp_path)),
+        "rid-v1", include_raw=False,
+    )
+    assert payload["text"] == '{"answer": 42}'
+    assert payload["json"] == {"answer": 42}
+    assert payload["events"] == [
+        {"type": "tool_use", "name": "Read"},
+        {"type": "assistant", "text": '{"answer": 42}'},
+    ]
+    assert payload["sessionId"] == "sess-xyz"
+    assert payload["usage"] == {"input_tokens": 5}
+    assert "parseError" not in payload
+
+
+def test_verbose_plus_schema_retries_on_parse_failure(
+    recording_adapter, monkeypatch, tmp_path,
+):
+    """Verbose+schema still triggers the 3-retry self-correction loop."""
+    recording_adapter.events_to_emit = []
+    calls = _patch_run_agent_sequence(monkeypatch, [
+        RunResult(
+            text="garbage", raw_stdout="garbage", raw_stderr="", exit_code=0,
+        ),
+        RunResult(
+            text='{"ok": true}',
+            raw_stdout='{"ok": true}', raw_stderr="", exit_code=0,
+            session_id="sess-r", usage={"input_tokens": 3},
+        ),
+    ])
+    from aicodebox.modes.api.server import _invoke
+
+    payload = _invoke(
+        _build_verbose_schema_spec(str(tmp_path)),
+        "rid-v2", include_raw=False,
+    )
+    assert payload["json"] == {"ok": True}
+    assert payload["jsonRetries"] == 1
+    assert payload["text"] == '{"ok": true}'
+    assert "events" in payload
+    assert calls["n"] == 2
+
+
 def test_json_mode_schema_validation_failure_retries(
     recording_adapter, monkeypatch, tmp_path,
 ):
@@ -345,6 +456,6 @@ def test_json_mode_schema_validation_failure_retries(
         _build_json_spec(str(tmp_path), schema=schema),
         "rid-j6", include_raw=False,
     )
-    assert payload["parsed"] == {"n": 7}
+    assert payload["json"] == {"n": 7}
     assert payload["jsonRetries"] == 1
     assert calls["n"] == 2

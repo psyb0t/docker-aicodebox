@@ -114,8 +114,19 @@ class RunBody(BaseModel):
     append_system_prompt: str | None = Field(
         default=None, alias="appendSystemPrompt",
     )
+    # When set, the agent is invoked in JSON mode and the response surfaces
+    # ``json`` (the decoded + schema-validated object) instead of ``text``.
+    # On parse / validation failure the wrapper retries up to 3 times before
+    # giving up. Composes with ``verbose``: schema-validated JSON appears
+    # in ``json`` alongside the full event log when both are set.
     json_schema: dict | None = Field(default=None, alias="jsonSchema")
-    output_format: str = Field(default="text", alias="outputFormat")
+    # Toggle between lean and full response shapes:
+    #   false (default) → {runId, workspace, exitCode, text}
+    #   true            → {... , text, sessionId, usage, events}
+    # ``verbose`` is about wire-format richness, not how the LLM responds —
+    # the agent itself runs in json-verbose mode under the hood so events
+    # are available for surfacing.
+    verbose: bool = False
     no_continue: bool = Field(default=False, alias="noContinue")
     resume: str | None = None
     async_: bool = Field(default=False, alias="async")
@@ -125,13 +136,38 @@ class RunBody(BaseModel):
     tools_allowlist: list[str] | None = Field(default=None, alias="toolsAllowlist")
     no_tools: bool = Field(default=False, alias="noTools")
     extra_args: list[str] | None = Field(default=None, alias="extraArgs")
-    # Default-off — raw stdout/stderr are large (especially with json-verbose
-    # adapters) and most callers only want result.text. Opt in to receive the
-    # full transcript. On non-zero exit ``stderr`` is always included, since
-    # that's the only diagnostic when text comes back empty.
+    # Default-off — raw stdout/stderr are large (especially when the adapter
+    # ran in json-verbose mode for ``verbose=true``) and most callers don't
+    # need the bytes. Opt in to receive them. On non-zero exit ``stderr`` is
+    # always included, since that's the only diagnostic when text is empty.
     include_raw: bool = Field(default=False, alias="includeRaw")
 
     model_config = {"populate_by_name": True}
+
+
+def _derive_output_format(body: RunBody) -> str:
+    """Map the API's ``jsonSchema`` + ``verbose`` flags onto the adapter's
+    ``output_format`` value.
+
+    The API doesn't expose adapter modes directly — callers say what they
+    want back over the wire and the wrapper picks the right invocation:
+
+      verbose=true                  → ``json-verbose`` (event stream)
+      jsonSchema set (verbose=false)→ ``json``         (clean JSON only)
+      neither                       → ``text``         (just prose)
+
+    ``jsonSchema + verbose=true`` is allowed: the agent runs in
+    json-verbose mode (so the caller gets the full event log) but the
+    wrapper still validates the final assistant text against the schema
+    and triggers the 3-retry self-correction loop on failure. The
+    schema-validated JSON ends up inside the assistant event in
+    ``events``; callers who want a parsed object can read ``json`` on
+    the response too — it's surfaced alongside ``events`` in this case."""
+    if body.verbose:
+        return "json-verbose"
+    if body.json_schema is not None:
+        return "json"
+    return "text"
 
 
 def _build_spec(body: RunBody) -> tuple[RunSpec, str]:
@@ -139,6 +175,7 @@ def _build_spec(body: RunBody) -> tuple[RunSpec, str]:
         workspace_path = resolve_workspace(body.workspace)
     except WorkspaceError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    output_format = _derive_output_format(body)
     try:
         spec = RunSpec(
             prompt=body.prompt,
@@ -147,7 +184,7 @@ def _build_spec(body: RunBody) -> tuple[RunSpec, str]:
             system_prompt=body.system_prompt,
             append_system_prompt=body.append_system_prompt,
             json_schema=body.json_schema,
-            output_format=body.output_format,
+            output_format=output_format,
             no_continue=body.no_continue,
             resume=body.resume,
             timeout_seconds=body.timeout_seconds,
@@ -194,11 +231,13 @@ def _retry_prompt(prev_text: str, parse_error: str, schema: dict | None) -> str:
 def _run_json_with_retry(
     spec: RunSpec, run_id: str, max_retries: int = JSON_RETRY_MAX,
 ) -> tuple[Any, Any, str | None, int]:
-    """Run a json-mode spec with up to ``max_retries`` re-prompts on parse
-    failure. Returns ``(result, parsed, parse_error, retries_used)``.
+    """Run a schema-validated spec with up to ``max_retries`` re-prompts
+    on parse failure. Returns ``(result, parsed, parse_error, retries_used)``.
 
-    Retries only kick in for ``output_format=json`` with a non-zero exit on
-    the latest attempt's wrapper-side parse — exit!=0 means the agent itself
+    Callable for both ``output_format=json`` and ``output_format=json-verbose``
+    — the schema validation runs against ``result.text`` (the final
+    assistant turn) regardless of which mode the adapter ran in. Retries
+    abort early if any attempt exits non-zero — that means the agent itself
     failed (timeout, missing binary, internal error) and replaying the prompt
     won't help. Each retry uses ``no_continue=True`` so the model gets a
     fresh session whose only history is the corrective prompt; mixing the
@@ -208,9 +247,6 @@ def _run_json_with_retry(
         RUNS.register_proc(run_id, proc)
 
     result = run_agent(spec, proc_hook=hook)
-
-    if spec.output_format != "json":
-        return result, result.parsed, result.parse_error, 0
 
     parsed = result.parsed
     parse_error = result.parse_error
@@ -251,15 +287,14 @@ def _invoke(
     def hook(proc: Any) -> None:
         RUNS.register_proc(run_id, proc)
 
-    # ── output_format picks the shape ───────────────────────────────────
-    # Each mode produces one well-defined surface; no leakage across.
-    #   text          → ``text`` (string)
-    #   json          → ``parsed`` (decoded) on success;
-    #                   ``text`` + ``parseError`` on decode/schema failure
-    #                   after up to JSON_RETRY_MAX self-correction retries
-    #   json-verbose  → ``events`` (list of adapter-emitted dicts)
-    fmt = spec.output_format
-    if fmt == "json":
+    # ── dispatch ────────────────────────────────────────────────────────
+    # Schema-validated runs (json or json-verbose with jsonSchema set) go
+    # through the retry helper — it re-prompts the agent up to 3 times on
+    # decode / schema-validation failure. Everything else is a single
+    # invocation.
+    has_schema = spec.json_schema is not None
+    is_verbose = spec.output_format == "json-verbose"
+    if has_schema:
         result, parsed, parse_error, retries = _run_json_with_retry(
             spec, run_id,
         )
@@ -269,22 +304,21 @@ def _invoke(
         parse_error = None
         retries = 0
 
+    # ── payload shaping ─────────────────────────────────────────────────
+    # The (jsonSchema, verbose) request pair maps onto three wire shapes:
+    #
+    #   verbose=false, no schema   → {exitCode, text}
+    #   verbose=false, schema set  → {exitCode, json}                on success
+    #                                {exitCode, text, parseError,
+    #                                 jsonRetries}                   on failure
+    #   verbose=true,  any schema  → {exitCode, text, events,
+    #                                 sessionId, usage}
+    #                                + {json} or {parseError,
+    #                                  jsonRetries} when schema set
     payload: dict[str, Any] = {"exitCode": result.exit_code}
 
-    if fmt == "json":
-        if parse_error:
-            # Caller needs the last raw text to debug why all attempts
-            # failed. retriesUsed surfaces how hard the wrapper tried.
-            payload["text"] = result.text
-            payload["parseError"] = parse_error
-        elif parsed is not None:
-            payload["parsed"] = parsed
-        else:
-            # Non-zero exit with empty text — surface text for diagnostic.
-            payload["text"] = result.text
-        if retries:
-            payload["jsonRetries"] = retries
-    elif fmt == "json-verbose":
+    if is_verbose:
+        payload["text"] = result.text
         try:
             events = get_adapter().parse_events(
                 result.raw_stdout or "", spec_to_request(spec),
@@ -293,15 +327,34 @@ def _invoke(
             log.exception("parse_events failed for run %s", run_id)
             events = []
         payload["events"] = events
+        if result.session_id:
+            payload["sessionId"] = result.session_id
+        if result.usage:
+            payload["usage"] = result.usage
+        if has_schema:
+            if parse_error:
+                payload["parseError"] = parse_error
+            elif parsed is not None:
+                payload["json"] = parsed
+            if retries:
+                payload["jsonRetries"] = retries
+    elif has_schema:
+        if parse_error:
+            # All retries failed — caller needs the last raw text to debug
+            # what the agent kept emitting. jsonRetries surfaces how hard
+            # the wrapper tried.
+            payload["text"] = result.text
+            payload["parseError"] = parse_error
+        elif parsed is not None:
+            payload["json"] = parsed
+        else:
+            # Non-zero exit with empty text — surface text for diagnostic.
+            payload["text"] = result.text
+        if retries:
+            payload["jsonRetries"] = retries
     else:
-        # "text" (default) — just the prose
+        # Lean text mode — just the prose, nothing else.
         payload["text"] = result.text
-
-    # ── metadata (always when adapter populates) ────────────────────────
-    if result.session_id:
-        payload["sessionId"] = result.session_id
-    if result.usage:
-        payload["usage"] = result.usage
 
     # ── raw bytes (opt-in; stderr also when exit != 0) ──────────────────
     # json-verbose adapters can dump megabytes of stream into stdout — the
