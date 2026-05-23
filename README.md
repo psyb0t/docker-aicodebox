@@ -78,9 +78,10 @@ class MyAdapter(AgentAdapter):
         return StreamEvent(type="delta", text=line + "\n") if line else None
 
     # Optional: post-hoc events surfaced in /run's ``events`` field when
-    # the caller requests ``verbose=true``. Runs once over completed stdout.
-    # Plain-text adapters return [] (the default) — verbose mode just won't
-    # carry events for those adapters.
+    # the caller passes ``jsonSchema`` (the schema mode is what triggers
+    # the full diagnostic surface). Runs once over completed stdout.
+    # Plain-text adapters return [] (the default) — schema mode will just
+    # not carry events for those adapters.
     def parse_events(self, stdout: str, req: RunRequest) -> list[dict]:
         return []
 ```
@@ -101,11 +102,9 @@ Modes are controlled by env vars. Set the flag, the entrypoint starts that mode.
 
 > **Required:** `AICODEBOX_AVAILABLE_MODELS=<csv>` — `/v1/models` needs a real list, and there's no safe fallback (the adapter name isn't a model name). API mode refuses to boot without it. Pick the model ids your configured provider actually serves.
 
-- `POST /run` — sync agent run. The response shape is driven by two request flags:
-  - **Default** (`verbose=false`, no `jsonSchema`) → `{runId, workspace, exitCode, text}`. Lean — just the assistant's prose.
-  - **`"verbose": true`** → `{runId, workspace, exitCode, text, events, sessionId, usage}`. `events` is the adapter's structured event log (tool calls, thinking blocks, per-turn metadata). `verbose` is about wire-format richness, not how the LLM should respond — the agent runs in its native verbose mode under the hood.
-  - **`"jsonSchema": {...}`** → the agent is asked to emit JSON, which is decoded + validated against the schema. On success: `{... , json}` where `json` is the parsed object. On parse / schema-validation failure the wrapper re-prompts the agent up to 3 times with the prior bad output + the specific error; if all attempts still fail you get `{... , text, parseError, jsonRetries}`. The raw JSON string is **not** surfaced on success — `json` is the canonical form.
-  - **`jsonSchema` + `verbose=true`** → composes. The agent runs in verbose mode (so the response carries the full event log + sessionId + usage) AND the wrapper validates the final assistant text against the schema with the same 3-retry self-correction. The validated object is surfaced alongside `events` as `json`; the caller can read either — the schema-validated JSON lives in `events` as the final assistant message AND as the top-level `json` field.
+- `POST /run` — sync agent run. The response shape is driven by a single request flag — `jsonSchema`:
+  - **No `jsonSchema`** → `{runId, workspace, exitCode, text}`. Lean — just the assistant's prose.
+  - **`"jsonSchema": {...}`** → full diagnostic surface: `{runId, workspace, exitCode, text, json, events, sessionId, usage}`. The agent is invoked in json-verbose mode under the hood — its output is decoded, validated against your schema, and the parsed object is surfaced as `json`; `events` carries the adapter's structured event log (tool calls, thinking blocks, per-turn metadata); `sessionId` + `usage` come from the agent. On parse / schema-validation failure the wrapper re-prompts the agent up to 3 times with the prior bad output + the specific error; if all attempts still fail, `parseError` + `jsonRetries` replace `json` (everything else — `text`, `events`, `sessionId`, `usage` — still surfaces). One flag, two wire shapes. No `verbose` dial — schema = full surface, no schema = lean.
 
   Set `"includeRaw": true` on the request to also receive `stdout` + `stderr`. `stderr` is always included automatically when `exitCode != 0` so the failure has a diagnostic.
 - `POST /run` with `"async": true` or `"fireAndForget": true` — returns `{runId, status: "running"}` immediately
@@ -264,7 +263,7 @@ A reference child image lives at [psyb0t/pibox](https://github.com/psyb0t/docker
 ```bash
 make help            # list targets
 make build           # docker build .
-make test            # python unit tests (94 cases — adapter contract, modes, helpers)
+make test            # python unit tests (113 cases — adapter contract, modes, helpers)
 make test-unit       # same as test
 make lint            # flake8 + pyright
 make format          # isort + black

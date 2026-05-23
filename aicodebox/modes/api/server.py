@@ -114,19 +114,15 @@ class RunBody(BaseModel):
     append_system_prompt: str | None = Field(
         default=None, alias="appendSystemPrompt",
     )
-    # When set, the agent is invoked in JSON mode and the response surfaces
-    # ``json`` (the decoded + schema-validated object) instead of ``text``.
-    # On parse / validation failure the wrapper retries up to 3 times before
-    # giving up. Composes with ``verbose``: schema-validated JSON appears
-    # in ``json`` alongside the full event log when both are set.
+    # When set, the agent is invoked in JSON mode (under the hood: the
+    # adapter's ``json-verbose`` output_format, so the event stream is
+    # available too) and the response carries the full diagnostic surface:
+    # ``text`` + ``json`` (decoded + schema-validated) + ``events``
+    # (tool calls / thinking / per-turn metadata) + ``sessionId`` + ``usage``.
+    # On parse / validation failure the wrapper retries up to 3 times,
+    # surfacing ``parseError`` + ``jsonRetries`` in place of ``json`` if all
+    # attempts fail. When unset the response is lean: just ``text``.
     json_schema: dict | None = Field(default=None, alias="jsonSchema")
-    # Toggle between lean and full response shapes:
-    #   false (default) → {runId, workspace, exitCode, text}
-    #   true            → {... , text, sessionId, usage, events}
-    # ``verbose`` is about wire-format richness, not how the LLM responds —
-    # the agent itself runs in json-verbose mode under the hood so events
-    # are available for surfacing.
-    verbose: bool = False
     no_continue: bool = Field(default=False, alias="noContinue")
     resume: str | None = None
     async_: bool = Field(default=False, alias="async")
@@ -137,36 +133,26 @@ class RunBody(BaseModel):
     no_tools: bool = Field(default=False, alias="noTools")
     extra_args: list[str] | None = Field(default=None, alias="extraArgs")
     # Default-off — raw stdout/stderr are large (especially when the adapter
-    # ran in json-verbose mode for ``verbose=true``) and most callers don't
-    # need the bytes. Opt in to receive them. On non-zero exit ``stderr`` is
-    # always included, since that's the only diagnostic when text is empty.
+    # ran in json-verbose mode for a schema-driven call) and most callers
+    # don't need the bytes. Opt in to receive them. On non-zero exit
+    # ``stderr`` is always included, since that's the only diagnostic when
+    # text is empty.
     include_raw: bool = Field(default=False, alias="includeRaw")
 
     model_config = {"populate_by_name": True}
 
 
 def _derive_output_format(body: RunBody) -> str:
-    """Map the API's ``jsonSchema`` + ``verbose`` flags onto the adapter's
-    ``output_format`` value.
+    """Pick the adapter's ``output_format`` for this request.
 
-    The API doesn't expose adapter modes directly — callers say what they
-    want back over the wire and the wrapper picks the right invocation:
+    Only one bit drives the choice: did the caller pass a ``jsonSchema``?
 
-      verbose=true                  → ``json-verbose`` (event stream)
-      jsonSchema set (verbose=false)→ ``json``         (clean JSON only)
-      neither                       → ``text``         (just prose)
-
-    ``jsonSchema + verbose=true`` is allowed: the agent runs in
-    json-verbose mode (so the caller gets the full event log) but the
-    wrapper still validates the final assistant text against the schema
-    and triggers the 3-retry self-correction loop on failure. The
-    schema-validated JSON ends up inside the assistant event in
-    ``events``; callers who want a parsed object can read ``json`` on
-    the response too — it's surfaced alongside ``events`` in this case."""
-    if body.verbose:
-        return "json-verbose"
+      jsonSchema set → ``json-verbose`` (full event stream, schema-validated
+                       final assistant text on top — the response carries
+                       text + json + events + sessionId + usage)
+      no jsonSchema  → ``text``         (lean prose, no events)"""
     if body.json_schema is not None:
-        return "json"
+        return "json-verbose"
     return "text"
 
 
@@ -288,12 +274,10 @@ def _invoke(
         RUNS.register_proc(run_id, proc)
 
     # ── dispatch ────────────────────────────────────────────────────────
-    # Schema-validated runs (json or json-verbose with jsonSchema set) go
-    # through the retry helper — it re-prompts the agent up to 3 times on
-    # decode / schema-validation failure. Everything else is a single
-    # invocation.
+    # Schema-driven runs go through the retry helper — it re-prompts the
+    # agent up to 3 times on decode / schema-validation failure. Plain
+    # text runs are a single invocation.
     has_schema = spec.json_schema is not None
-    is_verbose = spec.output_format == "json-verbose"
     if has_schema:
         result, parsed, parse_error, retries = _run_json_with_retry(
             spec, run_id,
@@ -305,20 +289,17 @@ def _invoke(
         retries = 0
 
     # ── payload shaping ─────────────────────────────────────────────────
-    # The (jsonSchema, verbose) request pair maps onto three wire shapes:
+    # Two wire shapes, picked by jsonSchema:
     #
-    #   verbose=false, no schema   → {exitCode, text}
-    #   verbose=false, schema set  → {exitCode, json}                on success
-    #                                {exitCode, text, parseError,
-    #                                 jsonRetries}                   on failure
-    #   verbose=true,  any schema  → {exitCode, text, events,
-    #                                 sessionId, usage}
-    #                                + {json} or {parseError,
-    #                                  jsonRetries} when schema set
-    payload: dict[str, Any] = {"exitCode": result.exit_code}
+    #   no schema  → {exitCode, text}
+    #   schema set → {exitCode, text, events, sessionId, usage,
+    #                 json | (parseError + jsonRetries)}
+    #
+    # Schema mode is always-verbose: the caller gets the full diagnostic
+    # surface (events, sessionId, usage) alongside the validated json.
+    payload: dict[str, Any] = {"exitCode": result.exit_code, "text": result.text}
 
-    if is_verbose:
-        payload["text"] = result.text
+    if has_schema:
         try:
             events = get_adapter().parse_events(
                 result.raw_stdout or "", spec_to_request(spec),
@@ -331,30 +312,12 @@ def _invoke(
             payload["sessionId"] = result.session_id
         if result.usage:
             payload["usage"] = result.usage
-        if has_schema:
-            if parse_error:
-                payload["parseError"] = parse_error
-            elif parsed is not None:
-                payload["json"] = parsed
-            if retries:
-                payload["jsonRetries"] = retries
-    elif has_schema:
         if parse_error:
-            # All retries failed — caller needs the last raw text to debug
-            # what the agent kept emitting. jsonRetries surfaces how hard
-            # the wrapper tried.
-            payload["text"] = result.text
             payload["parseError"] = parse_error
         elif parsed is not None:
             payload["json"] = parsed
-        else:
-            # Non-zero exit with empty text — surface text for diagnostic.
-            payload["text"] = result.text
         if retries:
             payload["jsonRetries"] = retries
-    else:
-        # Lean text mode — just the prose, nothing else.
-        payload["text"] = result.text
 
     # ── raw bytes (opt-in; stderr also when exit != 0) ──────────────────
     # json-verbose adapters can dump megabytes of stream into stdout — the
