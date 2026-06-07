@@ -312,6 +312,64 @@ def models() -> dict[str, Any]:
     }
 
 
+def _parse_bool_header(value: str | None) -> bool:
+    return value is not None and value.strip().lower() in ("1", "true", "yes")
+
+
+def _parse_int_header(value: str | None, name: str) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value.strip())
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{name}: must be an integer, got {value!r}",
+        ) from exc
+
+
+def _parse_dict_header(value: str | None, name: str) -> dict | None:
+    if value is None:
+        return None
+    try:
+        obj = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{name}: invalid JSON: {exc}",
+        ) from exc
+    if not isinstance(obj, dict):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{name}: must be a JSON object",
+        )
+    return obj
+
+
+def _parse_list_header(value: str | None, name: str) -> list[str] | None:
+    """Accept either a JSON array or a comma-separated string."""
+    if value is None:
+        return None
+    stripped = value.strip()
+    if not stripped:
+        return None
+    if stripped.startswith("["):
+        try:
+            arr = json.loads(stripped)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{name}: invalid JSON array: {exc}",
+            ) from exc
+        if not isinstance(arr, list):
+            raise HTTPException(
+                status_code=400,
+                detail=f"{name}: JSON value must be an array",
+            )
+        return [str(x) for x in arr]
+    return [s.strip() for s in stripped.split(",") if s.strip()]
+
+
 @router.post("/openai/v1/chat/completions")
 async def chat_completions(
     req: _OAIRequest,
@@ -320,6 +378,20 @@ async def chat_completions(
     x_append_system_prompt: str | None = Header(
         default=None, alias="x-aicodebox-append-system-prompt",
     ),
+    x_json_schema: str | None = Header(
+        default=None, alias="x-aicodebox-json-schema",
+    ),
+    x_resume: str | None = Header(default=None, alias="x-aicodebox-resume"),
+    x_extra_args: str | None = Header(
+        default=None, alias="x-aicodebox-extra-args",
+    ),
+    x_timeout_seconds: str | None = Header(
+        default=None, alias="x-aicodebox-timeout-seconds",
+    ),
+    x_tools_allowlist: str | None = Header(
+        default=None, alias="x-aicodebox-tools-allowlist",
+    ),
+    x_no_tools: str | None = Header(default=None, alias="x-aicodebox-no-tools"),
     x_claude_workspace: str | None = Header(default=None, alias="x-claude-workspace"),
     x_claude_continue: str | None = Header(default=None, alias="x-claude-continue"),
     x_claude_append_system_prompt: str | None = Header(
@@ -337,7 +409,7 @@ async def chat_completions(
     if req.response_format and req.response_format.get("type") == "json_object":
         raise HTTPException(
             status_code=400,
-            detail="response_format=json_object not supported — use /run with jsonSchema",
+            detail="response_format=json_object not supported — use jsonSchema header",
         )
 
     prompt, system_prompt = await _messages_to_prompt(req.messages)
@@ -356,6 +428,20 @@ async def chat_completions(
     if requested_model == get_adapter().name:
         requested_model = ""
 
+    json_schema = _parse_dict_header(x_json_schema, "x-aicodebox-json-schema")
+    extra_args = _parse_list_header(x_extra_args, "x-aicodebox-extra-args") or []
+    timeout_seconds = _parse_int_header(
+        x_timeout_seconds, "x-aicodebox-timeout-seconds",
+    )
+    tools_allowlist = _parse_list_header(
+        x_tools_allowlist, "x-aicodebox-tools-allowlist",
+    )
+    no_tools = _parse_bool_header(x_no_tools)
+
+    # Schema-driven runs need the adapter's verbose event stream so the final
+    # assistant turn can be schema-validated (mirrors /run's _derive_output_format).
+    schema_output_format = "json-verbose" if json_schema is not None else None
+
     if req.stream:
         return await _stream_response(
             prompt=prompt,
@@ -366,6 +452,13 @@ async def chat_completions(
             no_continue=no_continue,
             thinking=req.reasoning_effort,
             req_model=req.model or get_adapter().name,
+            json_schema=json_schema,
+            resume=x_resume,
+            extra_args=extra_args,
+            timeout_seconds=timeout_seconds,
+            tools_allowlist=tools_allowlist,
+            no_tools=no_tools,
+            output_format=schema_output_format,
         )
 
     spec = RunSpec(
@@ -376,7 +469,13 @@ async def chat_completions(
         append_system_prompt=x_append_system_prompt,
         no_continue=no_continue,
         thinking=req.reasoning_effort,
-        output_format="json",
+        output_format=schema_output_format or "json",
+        json_schema=json_schema,
+        resume=x_resume,
+        extra_args=extra_args,
+        timeout_seconds=timeout_seconds,
+        tools_allowlist=tools_allowlist,
+        no_tools=no_tools,
     )
 
     if not RUNS.acquire_workspace(workspace):
@@ -456,6 +555,13 @@ async def _stream_response(
     no_continue: bool,
     thinking: str | None,
     req_model: str,
+    json_schema: dict | None = None,
+    resume: str | None = None,
+    extra_args: list[str] | None = None,
+    timeout_seconds: int | None = None,
+    tools_allowlist: list[str] | None = None,
+    no_tools: bool = False,
+    output_format: str | None = None,
 ) -> StreamingResponse:
     if not RUNS.acquire_workspace(workspace):
         raise HTTPException(status_code=409, detail="workspace busy, retry later")
@@ -464,7 +570,7 @@ async def _stream_response(
     created = int(time.time())
 
     async def gen() -> AsyncIterator[str]:
-        spec = RunSpec(
+        spec_kwargs: dict[str, Any] = dict(
             prompt=prompt,
             workspace=workspace,
             model=model,
@@ -472,7 +578,16 @@ async def _stream_response(
             append_system_prompt=append_system_prompt,
             no_continue=no_continue,
             thinking=thinking,
+            json_schema=json_schema,
+            resume=resume,
+            extra_args=list(extra_args or []),
+            timeout_seconds=timeout_seconds,
+            tools_allowlist=tools_allowlist,
+            no_tools=no_tools,
         )
+        if output_format is not None:
+            spec_kwargs["output_format"] = output_format
+        spec = RunSpec(**spec_kwargs)
         finish: str = "stop"
         try:
             yield _sse_chunk(
