@@ -4,6 +4,105 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking REST changes (called
 out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.8.1 — 2026-06-18
+
+Three correctness fixes on the v0.8.0 schema-mode path: distinguish
+agent crashes from validation failures (500 vs 422), sum token usage
+across retry attempts so the bill is honest, and surface per-attempt
+breakdown so callers can debug + bill per attempt. Plus regression
+tests for streaming RunSpec plumbing that v0.7.0 shipped untested.
+
+### Bug fix — agent crash in schema mode returns 500, not 422
+
+In v0.8.0 a schema-mode request whose agent process exited non-zero
+(crash, timeout, missing binary) returned **422** — the same code used
+for "agent ran fine but the JSON it produced still doesn't match your
+schema after 3 retries". That conflated two very different failure
+sources: caller-side schema problems vs server-side process problems.
+A client retrying on 422 (assuming "my schema is too strict") would
+loop indefinitely on a real server crash.
+
+Now:
+- **422** — retries exhausted, agent's output still doesn't validate.
+  Caller's schema or prompt is the root cause.
+- **500** — agent process exited non-zero. Server-side problem.
+  Detail includes the exit code + the first 200 chars of stderr.
+
+The non-schema path is unchanged (it never inspected `exit_code` and
+still returns 200 with whatever text the agent produced, matching
+prior behavior).
+
+### Bug fix — usage is summed across retries
+
+In v0.8.0 the schema-mode response surfaced `result.usage` from the
+FINAL attempt only. Every retry is its own paid LLM call; reporting
+only the last attempt's tokens under-counted the actual provider bill.
+
+`run_with_json_retry` now sums every numeric usage field — including
+`input_tokens` / `output_tokens` / `total_tokens` / `cache_creation_*`
+/ `cache_read_*` / anything else the adapter surfaces — across all
+attempts. The summed total is written back to `result.usage` so
+downstream payloads (`/run` response, OAI envelope) report the real
+billable cost without needing to know retries happened. Non-numeric
+fields (model id, request id, etc.) keep the first occurrence —
+summing strings is meaningless.
+
+### New — per-attempt breakdown
+
+The retry helper now also populates `result.attempts`, a list of
+per-attempt records:
+
+```json
+[
+  {"index": 0, "usage": {"input_tokens": 100, "output_tokens": 20},
+   "exitCode": 0, "parseError": "schema mismatch: n is string"},
+  {"index": 1, "usage": {"input_tokens": 110, "output_tokens": 25},
+   "exitCode": 0, "parseError": "schema mismatch: n is string"},
+  {"index": 2, "usage": {"input_tokens": 120, "output_tokens": 30},
+   "exitCode": 0, "parseError": null}
+]
+```
+
+Surfaced as `attempts` on the `/run` response and as
+`aicodebox_attempts` on the OAI envelope (vendor extension key — OAI
+clients ignore unknown fields). Callers can render "retry 2/3 cost X
+tokens", debug which retry failed which way, or bill per attempt.
+Always present in schema mode; absent in non-schema mode.
+
+### Tests
+
+- `tests/test_usage_accumulation.py` (NEW) — 14 cases covering the
+  `_accumulate_usage` helper (numeric sum, cache-token fields, none /
+  empty handling, new-key inclusion, non-numeric first-wins, bool
+  edge case, float sum, type-mismatch preservation) and
+  `run_with_json_retry` end-to-end (success path with summed usage +
+  3-entry attempts array, exhaustion with 4× sum + 4-entry array,
+  crash mid-retry, single-entry array on no-retries-needed, missing
+  per-attempt usage).
+- `tests/test_oai_schema.py::test_schema_retry_succeeds` — extended
+  to assert summed `usage` (210 / 50 / 260) and the
+  `aicodebox_attempts` array in the OAI envelope.
+- `tests/test_oai_schema.py::test_schema_agent_crash_returns_500` —
+  asserts the new 500 with the exit code + stderr in `detail`.
+- `tests/test_oai_schema.py::test_schema_failure_after_retries_returns_422`
+  — extended to assert the actual retry count (initial + 3 retries =
+  4 attempts, matching `JSON_RETRY_MAX = 3`).
+- `tests/test_oai_schema.py::test_stream_plumbs_runspec_headers` —
+  new regression catch: verifies the streaming path's `_stream_response`
+  threads `extra_args` / `no_tools` / `tools_allowlist` /
+  `timeout_seconds` / `resume` from headers all the way into the
+  `RunSpec` built inside the async generator. v0.7.0 added these
+  kwargs but never tested them end-to-end.
+
+### Migration
+
+None — strict improvement. Clients that read `usage` get the real
+total now (previously under-counted). Clients that need per-attempt
+detail read `attempts` (`/run`) or `aicodebox_attempts` (OAI). Clients
+catching 5xx for "server problem, maybe retry" already do the right
+thing. Clients with a specific 422 handler should narrow it to
+"schema validation failed" and add a 500 handler for "agent crashed".
+
 ## v0.8.0 — 2026-06-18
 
 Wire the schema validation + self-correction path into

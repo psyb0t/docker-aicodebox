@@ -115,6 +115,36 @@ def _json_retry_prompt(
     return "\n".join(parts)
 
 
+def _accumulate_usage(
+    target: dict[str, Any], src: dict[str, Any] | None,
+) -> None:
+    """Sum compatible numeric usage fields from ``src`` into ``target``.
+
+    Each retry runs the agent again and the provider bills for every
+    attempt. Without this accumulator the caller sees only the FINAL
+    attempt's tokens — under-counting the actual cost. Non-numeric or
+    type-mismatched fields keep the first occurrence (caller can still
+    surface things like model id / request id sensibly).
+    """
+    if not src:
+        return
+    for key, val in src.items():
+        if isinstance(val, bool):
+            # bool is a subclass of int — treat as non-numeric.
+            target.setdefault(key, val)
+            continue
+        if isinstance(val, (int, float)):
+            existing = target.get(key, 0)
+            if isinstance(existing, bool) or not isinstance(
+                existing, (int, float),
+            ):
+                target.setdefault(key, val)
+                continue
+            target[key] = existing + val
+            continue
+        target.setdefault(key, val)
+
+
 def run_with_json_retry(
     spec: RunSpec,
     proc_hook: ProcHook = None,
@@ -133,8 +163,15 @@ def run_with_json_retry(
     ``no_continue=True`` so the model gets a fresh session whose only
     history is the corrective prompt; mixing the bad turn into ongoing
     context tends to make models double down on it.
+
+    ``final_result.usage`` is the SUMMED usage across every attempt
+    (initial + each retry). Reporting only the last attempt's usage
+    would under-count what the provider actually billed, since every
+    attempt is its own paid LLM call.
     """
     result = run(spec, proc_hook=proc_hook)
+    accumulated_usage: dict[str, Any] = {}
+    _accumulate_usage(accumulated_usage, result.usage)
 
     parsed = result.parsed
     parse_error = result.parse_error
@@ -142,6 +179,15 @@ def run_with_json_retry(
         parsed, parse_error = parse_json_response(
             result.text or "", spec.json_schema,
         )
+
+    # Per-attempt breakdown — initial + each retry. Caller can render
+    # "retry 2/3 cost X tokens" / debug which attempts failed which way.
+    attempts: list[dict[str, Any]] = [{
+        "index": 0,
+        "usage": dict(result.usage) if result.usage else None,
+        "exitCode": result.exit_code,
+        "parseError": parse_error,
+    }]
 
     retries = 0
     while parse_error and result.exit_code == 0 and retries < max_retries:
@@ -158,7 +204,14 @@ def run_with_json_retry(
             resume=None,
         )
         result = run(retry_spec, proc_hook=proc_hook)
+        _accumulate_usage(accumulated_usage, result.usage)
         if result.exit_code != 0:
+            attempts.append({
+                "index": retries,
+                "usage": dict(result.usage) if result.usage else None,
+                "exitCode": result.exit_code,
+                "parseError": None,
+            })
             break
         parsed = result.parsed
         parse_error = result.parse_error
@@ -166,6 +219,21 @@ def run_with_json_retry(
             parsed, parse_error = parse_json_response(
                 result.text or "", spec.json_schema,
             )
+        attempts.append({
+            "index": retries,
+            "usage": dict(result.usage) if result.usage else None,
+            "exitCode": result.exit_code,
+            "parseError": parse_error,
+        })
+
+    # Overwrite final result's usage with the cross-attempt total so
+    # downstream callers (server.py /run payload, oai.py OAI envelope)
+    # see the real billable cost without needing to know retries
+    # happened. The per-attempt breakdown stays available via
+    # result.attempts.
+    if accumulated_usage:
+        result.usage = accumulated_usage
+    result.attempts = attempts
 
     return result, parsed, parse_error, retries
 

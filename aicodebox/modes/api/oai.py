@@ -501,7 +501,27 @@ async def chat_completions(
     cid = f"chatcmpl-{uuid.uuid4().hex[:12]}"
     created = int(time.time())
 
-    def _do(rid: str) -> tuple[str, dict[str, Any], int, str | None]:
+    def _do(
+        rid: str,
+    ) -> tuple[
+        str,
+        dict[str, Any],
+        list[dict[str, Any]] | None,
+        int | None,
+        str | None,
+    ]:
+        """Returns
+        ``(content, usage, attempts, error_status, error_detail)``.
+
+        ``attempts`` is the per-attempt breakdown from
+        ``run_with_json_retry`` (None outside schema mode). ``usage`` is
+        the SUM across all attempts.
+
+        ``error_status`` is the HTTP code the route should raise (``None``
+        on success). Splitting "agent crashed" from "schema validation
+        failed" lets the route surface them as 500 vs 422 respectively —
+        same wire shape, different semantics.
+        """
         def hook(proc: Any) -> None:
             RUNS.register_proc(rid, proc)
         # Schema runs go through the retry helper — same self-correction
@@ -522,8 +542,10 @@ async def chat_completions(
                 return (
                     result.text or "",
                     result.usage or {},
-                    result.exit_code,
-                    f"agent exit code {result.exit_code}",
+                    result.attempts,
+                    500,
+                    f"agent exited with code {result.exit_code}: "
+                    f"{result.raw_stderr[:200]}",
                 )
             if parse_error is not None:
                 log.warning(
@@ -533,12 +555,13 @@ async def chat_completions(
                 return (
                     result.text or "",
                     result.usage or {},
-                    0,
+                    result.attempts,
+                    422,
                     f"json_schema validation failed after {retries} "
                     f"retries: {parse_error}",
                 )
             content = json.dumps(parsed)
-            return content, result.usage or {}, 0, None
+            return content, result.usage or {}, result.attempts, None, None
 
         result = run_agent(spec, proc_hook=hook)
         if result.exit_code != 0:
@@ -546,7 +569,7 @@ async def chat_completions(
                 "oai chat: agent rc=%s stderr=%r",
                 result.exit_code, result.raw_stderr[:200],
             )
-        return result.text or "", result.usage or {}, result.exit_code, None
+        return result.text or "", result.usage or {}, None, None, None
 
     try:
         _, ret, err = await asyncio.get_event_loop().run_in_executor(
@@ -557,16 +580,13 @@ async def chat_completions(
     if err is not None:
         raise HTTPException(status_code=500, detail=err)
 
-    if not isinstance(ret, tuple):
-        # backwards-compat — old shape was (text, usage)
-        ret = (ret, {}, 0, None)
-    text, usage, _exit_code, schema_error = ret
-    if schema_error is not None:
-        raise HTTPException(status_code=422, detail=schema_error)
+    text, usage, attempts, error_status, error_detail = ret
+    if error_status is not None:
+        raise HTTPException(status_code=error_status, detail=error_detail)
     in_tok = _usage_tokens(usage, "input_tokens", "inputTokens", "input")
     out_tok = _usage_tokens(usage, "output_tokens", "outputTokens", "output")
 
-    return {
+    envelope: dict[str, Any] = {
         "id": cid,
         "object": "chat.completion",
         "created": created,
@@ -584,6 +604,15 @@ async def chat_completions(
             "total_tokens": in_tok + out_tok,
         },
     }
+    # Per-attempt breakdown — only present when schema mode actually
+    # ran the retry helper. Holds an array of {index, usage, exitCode,
+    # parseError} entries so clients can bill per-attempt and debug
+    # which retry failed which way. Lives under an ``aicodebox_*`` key
+    # because the OAI schema has no slot for vendor extension data;
+    # OAI-only clients ignore unknown fields cleanly.
+    if attempts:
+        envelope["aicodebox_attempts"] = attempts
+    return envelope
 
 
 # ── streaming (one SSE chunk per adapter StreamEvent) ────────────────────────

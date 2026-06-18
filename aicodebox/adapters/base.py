@@ -53,6 +53,14 @@ class RunResult:
     parsed: Any = None
     parse_error: str | None = None
     usage: dict[str, Any] | None = None
+    # Set by ``run_with_json_retry`` when at least one attempt ran. Each
+    # entry: {"index": int, "usage": dict | None, "exit_code": int,
+    # "parse_error": str | None}. ``usage`` here is the per-attempt
+    # cost; the top-level ``usage`` field above is the sum across all
+    # attempts. Callers that need to bill per-attempt or display
+    # "retry 2/3 cost 120 input tokens" use this; callers that just
+    # want the total use ``usage``.
+    attempts: list[dict[str, Any]] | None = None
 
 
 @dataclass

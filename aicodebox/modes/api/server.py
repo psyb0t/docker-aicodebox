@@ -230,6 +230,12 @@ def _invoke(
             payload["sessionId"] = result.session_id
         if result.usage:
             payload["usage"] = result.usage
+        if result.attempts:
+            # Per-attempt usage + exit code + parse_error. The top-level
+            # ``usage`` field is the SUM across all attempts; this array
+            # gives the breakdown so callers can bill per-attempt or
+            # debug which retry failed which way.
+            payload["attempts"] = result.attempts
         if parse_error:
             payload["parseError"] = parse_error
         elif parsed is not None:
