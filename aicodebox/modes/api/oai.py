@@ -45,7 +45,12 @@ from aicodebox.modes.api.workspace import (
     WorkspaceError,
     resolve as resolve_workspace,
 )
-from aicodebox.shared.runner import RunSpec, run as run_agent, run_stream
+from aicodebox.shared.runner import (
+    RunSpec,
+    run as run_agent,
+    run_stream,
+    run_with_json_retry,
+)
 
 log = logging.getLogger("api.oai")
 
@@ -442,6 +447,18 @@ async def chat_completions(
     # assistant turn can be schema-validated (mirrors /run's _derive_output_format).
     schema_output_format = "json-verbose" if json_schema is not None else None
 
+    # Streaming + schema is incompatible: schema validation requires the
+    # complete response. We can't validate while still emitting deltas, and
+    # mid-stream parse failure has no clean way to recover via the SSE wire.
+    if req.stream and json_schema is not None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "x-aicodebox-json-schema is incompatible with stream=true; "
+                "set stream=false for schema-validated responses"
+            ),
+        )
+
     if req.stream:
         return await _stream_response(
             prompt=prompt,
@@ -484,16 +501,52 @@ async def chat_completions(
     cid = f"chatcmpl-{uuid.uuid4().hex[:12]}"
     created = int(time.time())
 
-    def _do(rid: str) -> tuple[str, dict[str, Any], str | None]:
+    def _do(rid: str) -> tuple[str, dict[str, Any], int, str | None]:
         def hook(proc: Any) -> None:
             RUNS.register_proc(rid, proc)
+        # Schema runs go through the retry helper — same self-correction
+        # path /run uses (up to 3 re-prompts on parse / validation failure).
+        # On success the OAI envelope's ``content`` carries the canonical
+        # JSON re-serialized (no fences, no surrounding prose) so the
+        # caller sees structurally clean output regardless of how the LLM
+        # originally formatted it.
+        if json_schema is not None:
+            result, parsed, parse_error, retries = run_with_json_retry(
+                spec, proc_hook=hook,
+            )
+            if result.exit_code != 0:
+                log.warning(
+                    "oai chat (schema): agent rc=%s stderr=%r",
+                    result.exit_code, result.raw_stderr[:200],
+                )
+                return (
+                    result.text or "",
+                    result.usage or {},
+                    result.exit_code,
+                    f"agent exit code {result.exit_code}",
+                )
+            if parse_error is not None:
+                log.warning(
+                    "oai chat (schema): %d retries exhausted, error=%s",
+                    retries, parse_error,
+                )
+                return (
+                    result.text or "",
+                    result.usage or {},
+                    0,
+                    f"json_schema validation failed after {retries} "
+                    f"retries: {parse_error}",
+                )
+            content = json.dumps(parsed)
+            return content, result.usage or {}, 0, None
+
         result = run_agent(spec, proc_hook=hook)
         if result.exit_code != 0:
             log.warning(
                 "oai chat: agent rc=%s stderr=%r",
                 result.exit_code, result.raw_stderr[:200],
             )
-        return result.text or "", result.usage or {}, None
+        return result.text or "", result.usage or {}, result.exit_code, None
 
     try:
         _, ret, err = await asyncio.get_event_loop().run_in_executor(
@@ -504,7 +557,12 @@ async def chat_completions(
     if err is not None:
         raise HTTPException(status_code=500, detail=err)
 
-    text, usage, _stop = ret if isinstance(ret, tuple) else (ret, {}, None)
+    if not isinstance(ret, tuple):
+        # backwards-compat — old shape was (text, usage)
+        ret = (ret, {}, 0, None)
+    text, usage, _exit_code, schema_error = ret
+    if schema_error is not None:
+        raise HTTPException(status_code=422, detail=schema_error)
     in_tok = _usage_tokens(usage, "input_tokens", "inputTokens", "input")
     out_tok = _usage_tokens(usage, "output_tokens", "outputTokens", "output")
 

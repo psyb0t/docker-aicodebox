@@ -79,30 +79,135 @@ class StreamEvent:
 
 
 _FENCE_RE = re.compile(r"^\s*```(?:json)?\s*\n?|\n?```\s*$", re.IGNORECASE)
+_FENCE_BLOCK_RE = re.compile(
+    r"```(?:json|JSON)?\s*\n?(.*?)\n?\s*```",
+    re.DOTALL,
+)
 
 
 def strip_json_fences(text: str) -> str:
     return _FENCE_RE.sub("", text).strip()
 
 
+def _balanced_extract(text: str, open_ch: str, close_ch: str) -> str | None:
+    """Find the first balanced ``open_ch``-to-``close_ch`` substring.
+
+    Walks the text once tracking string literals + escapes so braces
+    inside JSON strings don't throw off the depth counter. Returns the
+    matched substring (inclusive) or ``None`` if no balanced block exists.
+    """
+    start = text.find(open_ch)
+    if start < 0:
+        return None
+    depth = 0
+    in_string = False
+    escape = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_string:
+            if escape:
+                escape = False
+                continue
+            if ch == "\\":
+                escape = True
+                continue
+            if ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+            continue
+        if ch == open_ch:
+            depth += 1
+        elif ch == close_ch:
+            depth -= 1
+            if depth == 0:
+                return text[start:i + 1]
+    return None
+
+
+def _json_candidates(text: str) -> list[str]:
+    """Best-effort candidate strings to try parsing as JSON, in order.
+
+    LLMs that ignore the "no prose, no fences" instruction commonly emit
+    one of these shapes:
+
+      - clean JSON only                    → candidate 0 wins
+      - JSON wrapped in ``` fences          → candidate 1 wins (edge-strip)
+      - prose + ```json{...}``` block       → candidate 2/3 wins (fenced block)
+      - prose + bare {...} object           → candidate 4 wins (brace-balance)
+
+    Caller iterates and returns the first that parses + schema-validates.
+    """
+    candidates: list[str] = [text]
+
+    edge_stripped = strip_json_fences(text)
+    if edge_stripped and edge_stripped != text:
+        candidates.append(edge_stripped)
+
+    fenced_blocks = _FENCE_BLOCK_RE.findall(text)
+    # Iterate fenced blocks LAST-first — LLMs that emit prose then a fenced
+    # answer at the end put the canonical value in the trailing block.
+    for block in reversed(fenced_blocks):
+        block_stripped = block.strip()
+        if block_stripped and block_stripped not in candidates:
+            candidates.append(block_stripped)
+
+    for open_ch, close_ch in (("{", "}"), ("[", "]")):
+        extracted = _balanced_extract(text, open_ch, close_ch)
+        if extracted and extracted not in candidates:
+            candidates.append(extracted)
+
+    return candidates
+
+
 def parse_json_response(
     text: str, schema: dict | None = None,
 ) -> tuple[Any, str | None]:
-    cleaned = strip_json_fences(text)
+    """Decode an LLM response as JSON, tolerating fences + surrounding prose.
+
+    Tries multiple extraction strategies (see ``_json_candidates``) and
+    returns the first candidate that both parses AND, if ``schema`` is
+    provided, schema-validates. The retry path on the caller side is
+    therefore reserved for "the model produced JSON but with the wrong
+    structure" — pure fencing/chatter issues are absorbed here.
+    """
+    first_parse_error: str | None = None
+    first_parsed: Any = None
+    first_schema_error: str | None = None
+
     try:
-        value = json.loads(cleaned)
-    except json.JSONDecodeError as exc:
-        return None, f"response is not valid JSON: {exc}"
-    if schema is not None:
+        import jsonschema  # type: ignore[import-not-found]
+        have_jsonschema = True
+    except ImportError:
+        jsonschema = None  # type: ignore[assignment]
+        have_jsonschema = False
+
+    for candidate in _json_candidates(text):
         try:
-            import jsonschema  # type: ignore[import-not-found]
-        except ImportError:
+            value = json.loads(candidate)
+        except json.JSONDecodeError as exc:
+            if first_parse_error is None:
+                first_parse_error = f"response is not valid JSON: {exc}"
+            continue
+
+        if schema is None or not have_jsonschema:
             return value, None
+
         try:
-            jsonschema.validate(value, schema)
-        except jsonschema.ValidationError as exc:
-            return None, f"response does not match schema: {exc.message}"
-    return value, None
+            jsonschema.validate(value, schema)  # type: ignore[union-attr]
+            return value, None
+        except jsonschema.ValidationError as exc:  # type: ignore[union-attr]
+            if first_parsed is None:
+                first_parsed = value
+                first_schema_error = (
+                    f"response does not match schema: {exc.message}"
+                )
+            continue
+
+    if first_schema_error is not None:
+        return None, first_schema_error
+    return None, first_parse_error or "response is not valid JSON"
 
 
 class AgentAdapter:

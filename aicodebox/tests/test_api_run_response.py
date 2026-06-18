@@ -50,14 +50,21 @@ def recording_adapter(monkeypatch):
 
 
 def _patch_run_agent(monkeypatch, result: RunResult):
-    """Make _invoke's run_agent return a canned RunResult."""
+    """Make _invoke's run_agent return a canned RunResult.
+
+    Patches both the ``server`` re-export and the underlying
+    ``shared.runner.run`` so the schema-retry path (which lives in
+    ``shared.runner.run_with_json_retry``) is intercepted as well.
+    """
     from aicodebox.modes.api import server as server_mod
+    from aicodebox.shared import runner as runner_mod
 
     def fake(spec, proc_hook=None):
         del spec, proc_hook
         return result
 
     monkeypatch.setattr(server_mod, "run_agent", fake)
+    monkeypatch.setattr(runner_mod, "run", fake)
 
 
 def _build_spec(workspace: str, output_format: str = "text"):
@@ -197,8 +204,13 @@ def _patch_run_agent_sequence(monkeypatch, results: list[RunResult]):
     """Each call to run_agent returns the next RunResult from the list.
 
     Lets the test simulate multi-attempt sequences — initial run + retries.
+    Patches both the ``server`` re-export and the underlying
+    ``shared.runner.run`` so the schema-retry path (which lives in
+    ``shared.runner.run_with_json_retry`` and calls ``run`` directly) is
+    intercepted as well.
     """
     from aicodebox.modes.api import server as server_mod
+    from aicodebox.shared import runner as runner_mod
     calls = {"n": 0}
 
     def fake(spec, proc_hook=None):
@@ -210,6 +222,7 @@ def _patch_run_agent_sequence(monkeypatch, results: list[RunResult]):
         return results[i]
 
     monkeypatch.setattr(server_mod, "run_agent", fake)
+    monkeypatch.setattr(runner_mod, "run", fake)
     return calls
 
 

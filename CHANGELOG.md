@@ -4,6 +4,78 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking REST changes (called
 out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.8.0 — 2026-06-18
+
+Wire the schema validation + self-correction path into
+`/openai/v1/chat/completions` and make `parse_json_response` tolerant of
+LLMs that wrap JSON in fences mid-prose. v0.7.0 plumbed
+`x-aicodebox-json-schema` through to the adapter but ignored
+`result.parsed` / `result.parse_error` — the route returned the raw text
+into `message.content` with no validation. This release closes that gap
+and reserves the retry budget for actual structural failures.
+
+### Schema validation on `/openai/v1/chat/completions`
+
+When `x-aicodebox-json-schema` is set, the route now runs the same
+self-correction path `/run` uses (up to 3 re-prompts on parse /
+validation failure). On success `message.content` carries the canonical
+re-serialized JSON — no fences, no surrounding prose, regardless of how
+the LLM originally formatted it. On exhaustion the route returns
+**422** with the validation error in `detail`. Setting `stream=true`
+together with the schema header returns **400** — schema validation
+requires the complete response and there's no clean way to recover from
+a mid-stream parse failure over the SSE wire.
+
+### Smarter JSON extraction in `adapters.base.parse_json_response`
+
+`parse_json_response` now tries multiple extraction strategies in order
+before declaring a response invalid:
+
+1. Clean JSON — caller already returned just JSON.
+2. Edge-fences stripped — `` ```json\n{...}\n``` `` at the boundaries.
+3. Mid-prose ``` fenced blocks — LAST block first (LLMs that emit
+   prose-then-answer put the canonical value in the trailing fence).
+4. Balanced-brace extraction — first complete `{...}` or `[...]`
+   substring, with proper string-literal + escape handling so braces
+   inside JSON strings don't throw off the depth counter.
+
+When a schema is provided, the loop prefers candidates that BOTH parse
+AND schema-validate. The retry budget is therefore reserved for the
+"agent emitted JSON with the wrong structure" case — pure fencing /
+chatter issues are absorbed here without a round trip.
+
+Benefits `/run` callers too (same shared helper). New extractor in
+`adapters/base.py`; the public surface (`parse_json_response`,
+`strip_json_fences`) is unchanged. Private helpers `_json_candidates`
+and `_balanced_extract` exposed for tests.
+
+### Refactor
+
+- Move `_retry_prompt` + `_run_json_with_retry` out of
+  `modes/api/server.py` into `shared/runner.py` as `_json_retry_prompt`
+  + `run_with_json_retry`. Both `/run` and `/openai/v1/chat/completions`
+  call it now. `JSON_RETRY_MAX = 3` lives next to it.
+
+### Tests
+
+- `tests/test_json_extraction.py` — 15 cases covering clean JSON, edge
+  fences, mid-prose fenced blocks (single, multiple, last-wins), brace
+  extraction with strings + escapes + nesting, schema-aware candidate
+  selection.
+- `tests/test_oai_schema.py` — 7 TestClient-driven end-to-end cases:
+  schema success (canonical content), retry success, exhaustion → 422,
+  `stream=true` + schema → 400, other-header plumbing,
+  malformed-header 400.
+- `tests/test_api_run_response.py` — patcher updated to also intercept
+  `shared.runner.run` (call site moved during the refactor).
+
+### Migration
+
+None — additive. v0.7.0 callers that set `x-aicodebox-json-schema` and
+got back unvalidated text in `message.content` now get either canonical
+JSON (success) or a 422 (validation failure after retries). Clients
+that were silently accepting malformed JSON should add a 422 handler.
+
 ## v0.7.0 — 2026-06-07
 
 Expose the remaining RunSpec knobs on `/openai/v1/chat/completions` so OAI

@@ -12,8 +12,6 @@ Port: AICODEBOX_API_MODE_PORT (default 8080).
 from __future__ import annotations
 
 import asyncio
-import dataclasses
-import json as _json
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -23,7 +21,6 @@ from fastapi import Depends, FastAPI, HTTPException, Path, Query
 from pydantic import BaseModel, Field
 
 from aicodebox.adapters import get_adapter
-from aicodebox.adapters.base import parse_json_response
 from aicodebox.modes.api.auth import check_bearer
 from aicodebox.modes.api.files import router as files_router
 from aicodebox.modes.api.oai import (
@@ -36,6 +33,7 @@ from aicodebox.shared.logging import configure_logging
 from aicodebox.shared.runner import (
     RunSpec,
     run as run_agent,
+    run_with_json_retry,
     spec_to_request,
     validate_spec,
 )
@@ -43,7 +41,6 @@ from aicodebox.shared.runner import (
 log = logging.getLogger("api")
 
 PURGE_INTERVAL_SECONDS = 600
-JSON_RETRY_MAX = 3
 
 
 _mcp_lifespan_cm: Any = None
@@ -188,85 +185,6 @@ def _build_spec(body: RunBody) -> tuple[RunSpec, str]:
     return spec, workspace_path
 
 
-def _retry_prompt(prev_text: str, parse_error: str, schema: dict | None) -> str:
-    """Build the re-prompt sent to the agent after a JSON parse failure.
-
-    The agent gets its own prior output back verbatim plus the specific
-    decode/schema-validation error, so it can self-correct rather than
-    guess what went wrong. Schema (when present) is re-stated to keep the
-    correction context-complete — the prior turn may have been many tokens
-    ago for the model."""
-    parts = [
-        "Your previous response could not be parsed as JSON.",
-        f"Error: {parse_error}",
-        "",
-        "Previous response:",
-        prev_text or "(empty)",
-        "",
-        "Re-emit ONLY valid JSON. No prose, no markdown, no code fences, "
-        "no commentary before or after.",
-    ]
-    if schema is not None:
-        parts.append("")
-        parts.append(
-            f"The JSON must conform to this schema: {_json.dumps(schema)}",
-        )
-    return "\n".join(parts)
-
-
-def _run_json_with_retry(
-    spec: RunSpec, run_id: str, max_retries: int = JSON_RETRY_MAX,
-) -> tuple[Any, Any, str | None, int]:
-    """Run a schema-validated spec with up to ``max_retries`` re-prompts
-    on parse failure. Returns ``(result, parsed, parse_error, retries_used)``.
-
-    Callable for both ``output_format=json`` and ``output_format=json-verbose``
-    — the schema validation runs against ``result.text`` (the final
-    assistant turn) regardless of which mode the adapter ran in. Retries
-    abort early if any attempt exits non-zero — that means the agent itself
-    failed (timeout, missing binary, internal error) and replaying the prompt
-    won't help. Each retry uses ``no_continue=True`` so the model gets a
-    fresh session whose only history is the corrective prompt; mixing the
-    bad turn into ongoing context tends to make models double down on it.
-    """
-    def hook(proc: Any) -> None:
-        RUNS.register_proc(run_id, proc)
-
-    result = run_agent(spec, proc_hook=hook)
-
-    parsed = result.parsed
-    parse_error = result.parse_error
-    if parsed is None and parse_error is None and result.exit_code == 0:
-        parsed, parse_error = parse_json_response(
-            result.text or "", spec.json_schema,
-        )
-
-    retries = 0
-    while parse_error and result.exit_code == 0 and retries < max_retries:
-        retries += 1
-        log.info(
-            "json retry %d/%d for run %s (error: %s)",
-            retries, max_retries, run_id, parse_error,
-        )
-        retry_spec = dataclasses.replace(
-            spec,
-            prompt=_retry_prompt(result.text or "", parse_error, spec.json_schema),
-            no_continue=True,
-            resume=None,
-        )
-        result = run_agent(retry_spec, proc_hook=hook)
-        if result.exit_code != 0:
-            break
-        parsed = result.parsed
-        parse_error = result.parse_error
-        if parsed is None and parse_error is None:
-            parsed, parse_error = parse_json_response(
-                result.text or "", spec.json_schema,
-            )
-
-    return result, parsed, parse_error, retries
-
-
 def _invoke(
     spec: RunSpec, run_id: str, include_raw: bool,
 ) -> dict[str, Any]:
@@ -279,8 +197,8 @@ def _invoke(
     # text runs are a single invocation.
     has_schema = spec.json_schema is not None
     if has_schema:
-        result, parsed, parse_error, retries = _run_json_with_retry(
-            spec, run_id,
+        result, parsed, parse_error, retries = run_with_json_retry(
+            spec, proc_hook=hook,
         )
     else:
         result = run_agent(spec, proc_hook=hook)

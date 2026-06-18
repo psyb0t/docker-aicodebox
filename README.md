@@ -111,7 +111,7 @@ Modes are controlled by env vars. Set the flag, the entrypoint starts that mode.
 - `GET /run/result?runId=<id>` — poll an async run (same payload shape as sync)
 - `DELETE /run/{id}` — kill an in-flight run
 - `GET|PUT|DELETE /files/{path}` — workspace file CRUD
-- `POST /v1/chat/completions` — OpenAI-compatible (streaming + non-streaming). Plug it into anything that speaks OpenAI.
+- `POST /v1/chat/completions` — OpenAI-compatible (streaming + non-streaming). Plug it into anything that speaks OpenAI. RunSpec knobs surface as `x-aicodebox-*` headers: `json-schema` (schema-validate the final turn with up to 3 self-correction retries; success → canonical JSON in `message.content`, exhaustion → **422**, combined with `stream=true` → **400**), `workspace`, `continue`, `append-system-prompt`, `resume`, `extra-args`, `timeout-seconds`, `tools-allowlist`, `no-tools`. Malformed header values surface as 400 with the offending header name.
 - `GET /v1/models` — model list from the adapter
 - `POST /mcp` — MCP server (mounted only when `AICODEBOX_MCP_MODE=1`; auth via `AICODEBOX_MCP_MODE_TOKEN`, separate from the API bearer)
 
