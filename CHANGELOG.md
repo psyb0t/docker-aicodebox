@@ -4,6 +4,66 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking REST changes (called
 out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.8.3 — 2026-06-19
+
+Fix the version-reporting drift v0.8.2 (and every prior release)
+shipped with: `aicodebox.__version__` reported `0.1.0` regardless of
+the actual release tag, and the docker image only ever tagged
+`:latest`. One canonical version source now; everything derives.
+
+### What was wrong
+
+Up to v0.8.2 inclusive:
+
+- `pyproject.toml` `[project] version` was stuck at `0.1.0` (never
+  bumped).
+- `aicodebox/__init__.py` had `__version__ = "0.1.0"` hardcoded
+  (also never bumped).
+- `Makefile` tagged every build `psyb0t/aicodebox:latest` — no
+  `vX.Y.Z` tag.
+
+So a customer running v0.8.2 from docker saw
+`aicodebox.__version__ == "0.1.0"` even though the released tag was
+`v0.8.2`. The OAI `info.version` in any generated spec, the
+`/healthz` payload, and any `--version` output would have lied
+about what was actually running.
+
+### The fix — single source of truth
+
+- **`pyproject.toml` `[project] version`** is now THE canonical
+  string. Bump that one line, everything else follows.
+- **`aicodebox/__init__.py`** reads it at import time via
+  `importlib.metadata.version("aicodebox")`. Falls back to
+  `"0.0.0+source"` only if the package isn't installed (source
+  checkout without `uv sync` — that fallback exists so the bug
+  is OBVIOUS rather than silently reporting a stale number).
+- **`Makefile`** derives the docker tag from `pyproject.toml` via
+  `awk` and tags BOTH `psyb0t/aicodebox:vX.Y.Z` AND
+  `psyb0t/aicodebox:latest` on every `make build`. New `make
+  version` target prints what would be tagged. Override at build
+  time via `VERSION=… make build` for one-offs.
+
+### Release flow going forward
+
+```bash
+$EDITOR pyproject.toml      # bump version = "0.X.Y"
+uv lock                     # refresh uv.lock with new project version
+make version                # confirm derived tag matches
+make build                  # tags :vX.Y.Z + :latest
+docker run --rm --entrypoint python3 psyb0t/aicodebox:vX.Y.Z \
+    -c "import aicodebox; print(aicodebox.__version__)"
+                            # confirms runtime matches
+```
+
+Then the usual git commit + tag + push via `git-update.sh`.
+
+### Migration
+
+None. Anyone scripting against `aicodebox.__version__` was
+already getting `"0.1.0"` regardless of what they pulled —
+they'll now get the real version starting with v0.8.3. Strict
+improvement.
+
 ## v0.8.2 — 2026-06-19
 
 Backfill proper logging across the schema-mode code path so a future

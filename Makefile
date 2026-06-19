@@ -1,15 +1,24 @@
 IMAGE_NAME := psyb0t/aicodebox
-TAG        := latest
+# Version comes from pyproject.toml so __version__, the wheel metadata, and
+# the docker image tag never drift apart. Override at build time via
+# `make build VERSION=...` if you need to pin to something other than the
+# in-tree value (rare — release flow bumps pyproject + __init__.py + tags
+# all in the same commit).
+VERSION    ?= $(shell awk -F\" '/^version *= *"/ {print $$2; exit}' pyproject.toml)
+TAG        := v$(VERSION)
 
 -include .env
 export
 
-.PHONY: all build run test test-unit lint format clean help
+.PHONY: all build run test test-unit lint format clean help version
 
 all: build ## Build the base image
 
-build: ## Build the Docker image
-	docker build -t $(IMAGE_NAME):$(TAG) .
+version: ## Print the version that would be tagged
+	@echo $(TAG)
+
+build: ## Build the Docker image, tagged with the pyproject version + :latest
+	docker build -t $(IMAGE_NAME):$(TAG) -t $(IMAGE_NAME):latest .
 
 run: build ## Drop into an interactive shell inside the base image
 	docker run --rm -it $(IMAGE_NAME):$(TAG) bash
