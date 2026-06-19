@@ -4,6 +4,59 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking REST changes (called
 out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.8.2 — 2026-06-19
+
+Backfill proper logging across the schema-mode code path so a future
+operator can reconstruct exactly what happened from logs alone. No
+behavior change.
+
+### Logging additions
+
+- **`adapters.base.parse_json_response`** — was completely silent.
+  Now: DEBUG per candidate (which extraction strategy, length,
+  sample, parse outcome, schema outcome), DEBUG on winning candidate
+  with its length, INFO summary on "all candidates tried, none
+  matched" with the first error. When a schema is provided but the
+  `jsonschema` lib isn't importable, WARN that validation was
+  skipped. Module gains its own logger (`adapters.base`).
+- **`shared.runner.run_with_json_retry`** — was emitting only the
+  per-retry INFO line. Now: INFO on entry (max retries, schema
+  keys), DEBUG on each attempt outcome (exit code, parse error,
+  usage keys), INFO/WARN per retry transition, WARN on
+  attempt-crashed-mid-retry abort, INFO terminal summary
+  (outcome=success|exhausted|crashed, attempts, retries,
+  total usage).
+- **`modes.api.oai.chat_completions`** — INFO entry log (model,
+  stream flag, message count, schema/resume/no-tools presence
+  flags). On schema-mode success: INFO with retries, attempts
+  count, total usage, content length. On non-schema success: INFO
+  with text length + usage. Header parse helpers
+  (`_parse_int_header` / `_parse_dict_header` / `_parse_list_header`)
+  WARN with the rejected value truncated before raising 400.
+
+### Format
+
+Uses the existing project logger (`shared.logging._JsonFormatter`).
+JSON shape when `DEBUG=1` includes `ts/level/logger/func/line/file/
+msg`. Plain `LEVEL logger: msg` text otherwise. No secrets, tokens,
+full request bodies, or env dumps in any added call. Header values
+truncated to ≤80 chars in the rejection warnings; raw stderr
+truncated to 200 chars in the crash warnings (consistent with
+existing log calls in the same files).
+
+### Tests
+
+All 151 existing tests still pass. No new test files — added
+logging is best-effort observability, not functional contract.
+Manually verified the JSON shape end-to-end with `DEBUG=1` against
+`parse_json_response` (fenced-prose input) and confirmed `ts /
+level / logger / func / line / file / msg` all present.
+
+### Migration
+
+None — internal observability improvement only. No public surface
+changed.
+
 ## v0.8.1 — 2026-06-18
 
 Three correctness fixes on the v0.8.0 schema-mode path: distinguish

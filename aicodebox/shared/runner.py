@@ -169,6 +169,11 @@ def run_with_json_retry(
     would under-count what the provider actually billed, since every
     attempt is its own paid LLM call.
     """
+    log.info(
+        "schema retry: starting (max_retries=%d, schema_keys=%s)",
+        max_retries,
+        list(spec.json_schema.keys()) if spec.json_schema else None,
+    )
     result = run(spec, proc_hook=proc_hook)
     accumulated_usage: dict[str, Any] = {}
     _accumulate_usage(accumulated_usage, result.usage)
@@ -179,6 +184,13 @@ def run_with_json_retry(
         parsed, parse_error = parse_json_response(
             result.text or "", spec.json_schema,
         )
+
+    log.debug(
+        "schema retry: initial attempt exit=%d parse_error=%s usage_keys=%s",
+        result.exit_code,
+        parse_error,
+        sorted(result.usage.keys()) if result.usage else None,
+    )
 
     # Per-attempt breakdown — initial + each retry. Caller can render
     # "retry 2/3 cost X tokens" / debug which attempts failed which way.
@@ -193,7 +205,8 @@ def run_with_json_retry(
     while parse_error and result.exit_code == 0 and retries < max_retries:
         retries += 1
         log.info(
-            "json retry %d/%d (error: %s)", retries, max_retries, parse_error,
+            "schema retry: re-prompting %d/%d (error: %s)",
+            retries, max_retries, parse_error,
         )
         retry_spec = dataclasses.replace(
             spec,
@@ -206,6 +219,11 @@ def run_with_json_retry(
         result = run(retry_spec, proc_hook=proc_hook)
         _accumulate_usage(accumulated_usage, result.usage)
         if result.exit_code != 0:
+            log.warning(
+                "schema retry: attempt %d crashed (exit=%d, stderr=%r) "
+                "— aborting retry loop",
+                retries, result.exit_code, result.raw_stderr[:200],
+            )
             attempts.append({
                 "index": retries,
                 "usage": dict(result.usage) if result.usage else None,
@@ -219,6 +237,12 @@ def run_with_json_retry(
             parsed, parse_error = parse_json_response(
                 result.text or "", spec.json_schema,
             )
+        log.debug(
+            "schema retry: attempt %d exit=%d parse_error=%s "
+            "usage_keys=%s",
+            retries, result.exit_code, parse_error,
+            sorted(result.usage.keys()) if result.usage else None,
+        )
         attempts.append({
             "index": retries,
             "usage": dict(result.usage) if result.usage else None,
@@ -234,6 +258,18 @@ def run_with_json_retry(
     if accumulated_usage:
         result.usage = accumulated_usage
     result.attempts = attempts
+
+    if parse_error and result.exit_code == 0:
+        outcome = "exhausted"
+    elif result.exit_code != 0:
+        outcome = "crashed"
+    else:
+        outcome = "success"
+    log.info(
+        "schema retry: complete outcome=%s attempts=%d retries=%d "
+        "total_usage=%s",
+        outcome, len(attempts), retries, accumulated_usage or None,
+    )
 
     return result, parsed, parse_error, retries
 

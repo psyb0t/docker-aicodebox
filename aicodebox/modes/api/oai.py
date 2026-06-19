@@ -327,6 +327,9 @@ def _parse_int_header(value: str | None, name: str) -> int | None:
     try:
         return int(value.strip())
     except ValueError as exc:
+        log.warning(
+            "oai: header %s rejected — not an integer: %r", name, value[:80],
+        )
         raise HTTPException(
             status_code=400,
             detail=f"{name}: must be an integer, got {value!r}",
@@ -339,11 +342,19 @@ def _parse_dict_header(value: str | None, name: str) -> dict | None:
     try:
         obj = json.loads(value)
     except json.JSONDecodeError as exc:
+        log.warning(
+            "oai: header %s rejected — invalid JSON (len=%d): %s",
+            name, len(value), exc,
+        )
         raise HTTPException(
             status_code=400,
             detail=f"{name}: invalid JSON: {exc}",
         ) from exc
     if not isinstance(obj, dict):
+        log.warning(
+            "oai: header %s rejected — expected JSON object, got %s",
+            name, type(obj).__name__,
+        )
         raise HTTPException(
             status_code=400,
             detail=f"{name}: must be a JSON object",
@@ -362,11 +373,19 @@ def _parse_list_header(value: str | None, name: str) -> list[str] | None:
         try:
             arr = json.loads(stripped)
         except json.JSONDecodeError as exc:
+            log.warning(
+                "oai: header %s rejected — invalid JSON array (len=%d): %s",
+                name, len(stripped), exc,
+            )
             raise HTTPException(
                 status_code=400,
                 detail=f"{name}: invalid JSON array: {exc}",
             ) from exc
         if not isinstance(arr, list):
+            log.warning(
+                "oai: header %s rejected — expected JSON array, got %s",
+                name, type(arr).__name__,
+            )
             raise HTTPException(
                 status_code=400,
                 detail=f"{name}: JSON value must be an array",
@@ -406,6 +425,14 @@ async def chat_completions(
     x_workspace = x_workspace or x_claude_workspace
     x_continue = x_continue or x_claude_continue
     x_append_system_prompt = x_append_system_prompt or x_claude_append_system_prompt
+    log.info(
+        "oai chat: request model=%r stream=%s messages=%d "
+        "has_schema=%s has_resume=%s no_tools=%s",
+        req.model, req.stream, len(req.messages),
+        x_json_schema is not None,
+        x_resume is not None,
+        x_no_tools is not None,
+    )
     if req.tools or req.tool_choice:
         raise HTTPException(
             status_code=400,
@@ -561,6 +588,14 @@ async def chat_completions(
                     f"retries: {parse_error}",
                 )
             content = json.dumps(parsed)
+            log.info(
+                "oai chat (schema): success retries=%d attempts=%d "
+                "total_usage=%s content_len=%d",
+                retries,
+                len(result.attempts) if result.attempts else 1,
+                result.usage or None,
+                len(content),
+            )
             return content, result.usage or {}, result.attempts, None, None
 
         result = run_agent(spec, proc_hook=hook)
@@ -568,6 +603,11 @@ async def chat_completions(
             log.warning(
                 "oai chat: agent rc=%s stderr=%r",
                 result.exit_code, result.raw_stderr[:200],
+            )
+        else:
+            log.info(
+                "oai chat: success text_len=%d usage=%s",
+                len(result.text or ""), result.usage or None,
             )
         return result.text or "", result.usage or {}, None, None, None
 

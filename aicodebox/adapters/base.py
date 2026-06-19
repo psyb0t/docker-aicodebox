@@ -14,11 +14,14 @@ from __future__ import annotations
 
 import importlib
 import json
+import logging
 import os
 import re
 import subprocess
 from dataclasses import dataclass, field
 from typing import Any, Callable, ClassVar, Optional
+
+log = logging.getLogger("adapters.base")
 
 ProcHook = Optional[Callable[[subprocess.Popen], None]]
 
@@ -191,21 +194,55 @@ def parse_json_response(
         jsonschema = None  # type: ignore[assignment]
         have_jsonschema = False
 
-    for candidate in _json_candidates(text):
+    if schema is not None and not have_jsonschema:
+        log.warning(
+            "parse_json_response: schema provided but jsonschema lib "
+            "not importable — validation skipped, parsed value will be "
+            "returned without enforcement",
+        )
+
+    candidates = _json_candidates(text)
+    log.debug(
+        "parse_json_response: trying %d candidate(s), schema=%s, text_len=%d",
+        len(candidates), schema is not None, len(text or ""),
+    )
+
+    for idx, candidate in enumerate(candidates):
+        sample = candidate[:60].replace("\n", "\\n")
         try:
             value = json.loads(candidate)
         except json.JSONDecodeError as exc:
+            log.debug(
+                "parse_json_response: candidate %d/%d failed json.loads "
+                "(len=%d, sample=%r): %s",
+                idx + 1, len(candidates), len(candidate), sample, exc,
+            )
             if first_parse_error is None:
                 first_parse_error = f"response is not valid JSON: {exc}"
             continue
 
         if schema is None or not have_jsonschema:
+            log.debug(
+                "parse_json_response: candidate %d/%d parsed clean "
+                "(no schema check, len=%d)",
+                idx + 1, len(candidates), len(candidate),
+            )
             return value, None
 
         try:
             jsonschema.validate(value, schema)  # type: ignore[union-attr]
+            log.debug(
+                "parse_json_response: candidate %d/%d parsed AND "
+                "schema-validated (len=%d)",
+                idx + 1, len(candidates), len(candidate),
+            )
             return value, None
         except jsonschema.ValidationError as exc:  # type: ignore[union-attr]
+            log.debug(
+                "parse_json_response: candidate %d/%d parsed but failed "
+                "schema (len=%d): %s",
+                idx + 1, len(candidates), len(candidate), exc.message,
+            )
             if first_parsed is None:
                 first_parsed = value
                 first_schema_error = (
@@ -214,7 +251,17 @@ def parse_json_response(
             continue
 
     if first_schema_error is not None:
+        log.info(
+            "parse_json_response: %d candidate(s) tried, none "
+            "schema-validated. First parse-then-schema error: %s",
+            len(candidates), first_schema_error,
+        )
         return None, first_schema_error
+    log.info(
+        "parse_json_response: %d candidate(s) tried, none parsed as JSON. "
+        "First error: %s",
+        len(candidates), first_parse_error,
+    )
     return None, first_parse_error or "response is not valid JSON"
 
 
