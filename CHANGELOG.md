@@ -4,6 +4,112 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking REST changes (called
 out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.9.0 — 2026-06-19
+
+Support OpenAI's standard `response_format` body field on
+`/openai/v1/chat/completions`. Stock OpenAI SDKs and clients can now
+drive schema-validated JSON without knowing about our custom
+`x-aicodebox-json-schema` header.
+
+### What was broken
+
+Up to v0.8.3 the OAI route only accepted schema constraints via our
+proprietary `x-aicodebox-json-schema` header. Standard OpenAI clients
+that set `response_format: {"type": "json_object"}` got a **400 not
+supported**, and `response_format: {"type": "json_schema", ...}`
+(OpenAI's structured-outputs shape) was silently dropped by Pydantic
+`extra="ignore"`. So callers using LangChain, the official `openai`
+SDK, LlamaIndex, etc. couldn't get JSON enforcement without
+custom-header surgery.
+
+### What's new
+
+`POST /openai/v1/chat/completions` now reads OpenAI's standard
+`response_format` body field and runs the same schema-validation +
+3-retry self-correction path the header has used since v0.8.0:
+
+```jsonc
+// Permissive — "just emit JSON, any shape"
+{ "response_format": { "type": "json_object" } }
+
+// Structured — strict schema constraint
+{
+  "response_format": {
+    "type": "json_schema",
+    "json_schema": {
+      "name": "answer",
+      "schema": {                       // ← the actual JSON schema
+        "type": "object",
+        "properties": { "n": { "type": "integer" } },
+        "required": ["n"]
+      },
+      "strict": true                    // ← accepted but not enforced
+                                        //    differently — we always
+                                        //    validate the agent's
+                                        //    final assistant turn
+    }
+  }
+}
+
+// Default — plain text, no schema
+{ "response_format": { "type": "text" } }
+```
+
+Failure semantics are identical to the header path:
+- success → `message.content` carries canonical re-serialized JSON
+- retries exhausted → **422** with the validation error in `detail`
+- agent process crash → **500** with exit code + stderr in `detail`
+- combined with `stream=true` → **400** (schema validation needs the
+  complete response)
+
+### Body field wins over header
+
+If a caller sets BOTH `response_format` (body) AND
+`x-aicodebox-json-schema` (header), the body field wins — that's the
+OpenAI standard. The route logs an INFO line noting the conflict so
+operators can tell when callers are double-specifying. The header
+stays supported as a fallback for clients that can't set the body
+field cleanly (curl one-liners, fixed-shape SDKs).
+
+### Entry log shape change
+
+The OAI request entry log's `has_schema=<bool>` field is replaced
+with `schema_via=<source>`. Values:
+- `response_format.json_schema` — body field, structured-outputs
+- `response_format.json_object` — body field, permissive
+- `x-aicodebox-json-schema` — header
+- `none` — no schema constraint
+
+### Tests
+
+`tests/test_oai_schema.py` gains 7 new cases:
+- `test_response_format_json_schema_drives_validation` — body field
+  triggers the retry helper end-to-end.
+- `test_response_format_json_object_forces_json` — permissive shape
+  drives validation without rejecting any structure.
+- `test_response_format_text_no_schema` — `text` is a no-op (default).
+- `test_response_format_body_wins_over_header` — both set → body
+  wins; verified by inspecting the spec passed into `run()`.
+- `test_response_format_unknown_type_returns_400` — unknown `type`
+  values rejected with a clear error.
+- `test_response_format_json_schema_missing_inner_returns_400` —
+  malformed nested shape rejected.
+- `test_response_format_stream_incompatible_returns_400` — same
+  guard as the header.
+
+Total: 158 tests (151 from v0.8.3 + 7 new).
+
+### Migration
+
+None for new callers — fully additive. Stock OpenAI clients now
+"just work" with schema enforcement out of the box.
+
+Existing callers using the `x-aicodebox-json-schema` header keep
+working unchanged. The previous **400** on
+`response_format=json_object` is gone — callers that were silently
+relying on that rejection to short-circuit a code path need to
+update (it now triggers schema validation instead of erroring).
+
 ## v0.8.3 — 2026-06-19
 
 Fix the version-reporting drift v0.8.2 (and every prior release)

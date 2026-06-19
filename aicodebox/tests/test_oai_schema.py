@@ -303,6 +303,183 @@ def test_malformed_json_schema_header_returns_400(client):
     assert "x-aicodebox-json-schema" in resp.json()["detail"]
 
 
+# ── OpenAI standard response_format body field ──────────────────────────────
+
+
+def test_response_format_json_schema_drives_validation(client, monkeypatch):
+    """OpenAI's standard response_format=json_schema body field triggers
+    the schema-retry path the same way the x-aicodebox-json-schema header
+    does. No custom header needed."""
+    _patch_runner_sequence(monkeypatch, [RunResult(
+        text='{"n": 7}', raw_stdout='{"n": 7}', raw_stderr="",
+        exit_code=0, usage={"input_tokens": 100, "output_tokens": 20},
+    )])
+
+    resp = client.post(
+        "/openai/v1/chat/completions",
+        json={
+            "model": "m1",
+            "messages": [{"role": "user", "content": "give me an int"}],
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "answer",
+                    "schema": {
+                        "type": "object",
+                        "properties": {"n": {"type": "integer"}},
+                        "required": ["n"],
+                    },
+                    "strict": True,
+                },
+            },
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert json.loads(body["choices"][0]["message"]["content"]) == {"n": 7}
+    # aicodebox_attempts is set whenever the schema-retry helper ran —
+    # confirms the standard body field actually drove the path.
+    assert "aicodebox_attempts" in body
+    assert len(body["aicodebox_attempts"]) == 1
+
+
+def test_response_format_json_object_forces_json(client, monkeypatch):
+    """response_format=json_object is OpenAI's 'just emit JSON, any
+    shape' mode. We treat it as a permissive {"type":"object"} schema —
+    enough to drive the retry helper into validating parseability
+    without rejecting any particular structure."""
+    _patch_runner_sequence(monkeypatch, [RunResult(
+        text='{"anything": "goes"}',
+        raw_stdout='{"anything": "goes"}', raw_stderr="",
+        exit_code=0, usage={"input_tokens": 50, "output_tokens": 10},
+    )])
+
+    resp = client.post(
+        "/openai/v1/chat/completions",
+        json={
+            "model": "m1",
+            "messages": [{"role": "user", "content": "any json"}],
+            "response_format": {"type": "json_object"},
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert json.loads(body["choices"][0]["message"]["content"]) == {
+        "anything": "goes",
+    }
+    assert "aicodebox_attempts" in body  # retry helper ran
+
+
+def test_response_format_text_no_schema(client, monkeypatch):
+    """response_format=text is the OAI default — no schema. The retry
+    helper does NOT run; aicodebox_attempts is absent."""
+    _patch_runner_sequence(monkeypatch, [RunResult(
+        text="just prose", raw_stdout="just prose", raw_stderr="",
+        exit_code=0, usage={"input_tokens": 30, "output_tokens": 5},
+    )])
+
+    resp = client.post(
+        "/openai/v1/chat/completions",
+        json={
+            "model": "m1",
+            "messages": [{"role": "user", "content": "hi"}],
+            "response_format": {"type": "text"},
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["choices"][0]["message"]["content"] == "just prose"
+    assert "aicodebox_attempts" not in body
+
+
+def test_response_format_body_wins_over_header(client, monkeypatch):
+    """If BOTH response_format body field AND x-aicodebox-json-schema
+    header are set, body wins (OAI standard takes precedence). Spec is
+    verified by the agent receiving the BODY's schema, not the header's."""
+    calls = _patch_runner_sequence(monkeypatch, [RunResult(
+        text='{"from_body": true}',
+        raw_stdout='{"from_body": true}', raw_stderr="",
+        exit_code=0,
+    )])
+
+    body_schema = {
+        "type": "object",
+        "required": ["from_body"],
+    }
+    header_schema = {
+        "type": "object",
+        "required": ["from_header"],
+    }
+
+    resp = client.post(
+        "/openai/v1/chat/completions",
+        json={
+            "model": "m1",
+            "messages": [{"role": "user", "content": "x"}],
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {"name": "b", "schema": body_schema},
+            },
+        },
+        headers={"x-aicodebox-json-schema": json.dumps(header_schema)},
+    )
+    # Agent's response satisfies the BODY schema; if the route had used
+    # the header schema instead, retries would have fired (no from_header
+    # key in the response).
+    assert resp.status_code == 200
+    # First spec passed to run() should carry the body schema, not header
+    first_spec = calls["specs"][0]
+    assert first_spec.json_schema == body_schema
+
+
+def test_response_format_unknown_type_returns_400(client):
+    resp = client.post(
+        "/openai/v1/chat/completions",
+        json={
+            "model": "m1",
+            "messages": [{"role": "user", "content": "x"}],
+            "response_format": {"type": "html"},
+        },
+    )
+    assert resp.status_code == 400
+    assert "html" in resp.json()["detail"]
+
+
+def test_response_format_json_schema_missing_inner_returns_400(client):
+    resp = client.post(
+        "/openai/v1/chat/completions",
+        json={
+            "model": "m1",
+            "messages": [{"role": "user", "content": "x"}],
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {"name": "x"},  # no inner "schema" key
+            },
+        },
+    )
+    assert resp.status_code == 400
+    assert "schema" in resp.json()["detail"]
+
+
+def test_response_format_stream_incompatible_returns_400(client):
+    """stream=true + response_format=json_schema → 400 (same as
+    stream=true + x-aicodebox-json-schema header)."""
+    resp = client.post(
+        "/openai/v1/chat/completions",
+        json={
+            "model": "m1",
+            "messages": [{"role": "user", "content": "x"}],
+            "stream": True,
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {"name": "x", "schema": {"type": "object"}},
+            },
+        },
+    )
+    assert resp.status_code == 400
+    assert "stream=true" in resp.json()["detail"]
+
+
 def test_malformed_timeout_header_returns_400(client):
     resp = client.post(
         "/openai/v1/chat/completions",

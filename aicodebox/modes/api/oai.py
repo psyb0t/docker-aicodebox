@@ -362,6 +362,79 @@ def _parse_dict_header(value: str | None, name: str) -> dict | None:
     return obj
 
 
+def _schema_from_response_format(rf: dict | None) -> dict | None:
+    """Extract a JSON schema from the OpenAI ``response_format`` body field.
+
+    The OpenAI Chat Completions API accepts three response_format shapes:
+
+      {"type": "text"}                    → plain prose (no schema)
+      {"type": "json_object"}             → force JSON output (any shape)
+      {"type": "json_schema",
+       "json_schema": {
+           "name": "<label>",
+           "schema": {...},
+           "strict": <bool>
+       }}                                 → schema-constrained JSON
+
+    Returns:
+      - None when no schema constraint applies (type=text or rf is None)
+      - {"type": "object"} for json_object (permissive — "must be JSON")
+      - the inner schema dict for json_schema
+
+    Raises 400 on malformed shapes so the caller can correct.
+    """
+    if not rf:
+        return None
+    rf_type = rf.get("type", "text")
+    if rf_type == "text":
+        return None
+    if rf_type == "json_object":
+        # OpenAI's "force JSON output" mode — no structural constraint,
+        # just "the model must emit parseable JSON". Permissive schema
+        # forces the retry helper to validate parseability without
+        # rejecting any particular shape.
+        return {"type": "object"}
+    if rf_type == "json_schema":
+        wrapper = rf.get("json_schema")
+        if not isinstance(wrapper, dict):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "response_format.json_schema must be an object with "
+                    "{name, schema, strict?}"
+                ),
+            )
+        inner = wrapper.get("schema")
+        if not isinstance(inner, dict):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "response_format.json_schema.schema must be a JSON "
+                    "object describing the expected output"
+                ),
+            )
+        return inner
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            f"response_format.type={rf_type!r} not recognized; expected "
+            "text | json_object | json_schema"
+        ),
+    )
+
+
+def _schema_source(rf: dict | None, header_value: str | None) -> str:
+    """Label for the entry-log: where the schema constraint (if any)
+    came from. ``response_format`` (body) > header > ``none``."""
+    if rf:
+        rf_type = rf.get("type")
+        if rf_type in ("json_object", "json_schema"):
+            return f"response_format.{rf_type}"
+    if header_value is not None:
+        return "x-aicodebox-json-schema"
+    return "none"
+
+
 def _parse_list_header(value: str | None, name: str) -> list[str] | None:
     """Accept either a JSON array or a comma-separated string."""
     if value is None:
@@ -427,9 +500,9 @@ async def chat_completions(
     x_append_system_prompt = x_append_system_prompt or x_claude_append_system_prompt
     log.info(
         "oai chat: request model=%r stream=%s messages=%d "
-        "has_schema=%s has_resume=%s no_tools=%s",
+        "schema_via=%s has_resume=%s no_tools=%s",
         req.model, req.stream, len(req.messages),
-        x_json_schema is not None,
+        _schema_source(req.response_format, x_json_schema),
         x_resume is not None,
         x_no_tools is not None,
     )
@@ -437,11 +510,6 @@ async def chat_completions(
         raise HTTPException(
             status_code=400,
             detail="tools/tool_choice not supported — agent runs its own tools",
-        )
-    if req.response_format and req.response_format.get("type") == "json_object":
-        raise HTTPException(
-            status_code=400,
-            detail="response_format=json_object not supported — use jsonSchema header",
         )
 
     prompt, system_prompt = await _messages_to_prompt(req.messages)
@@ -460,7 +528,10 @@ async def chat_completions(
     if requested_model == get_adapter().name:
         requested_model = ""
 
-    json_schema = _parse_dict_header(x_json_schema, "x-aicodebox-json-schema")
+    header_schema = _parse_dict_header(
+        x_json_schema, "x-aicodebox-json-schema",
+    )
+    body_schema = _schema_from_response_format(req.response_format)
     extra_args = _parse_list_header(x_extra_args, "x-aicodebox-extra-args") or []
     timeout_seconds = _parse_int_header(
         x_timeout_seconds, "x-aicodebox-timeout-seconds",
@@ -469,6 +540,18 @@ async def chat_completions(
         x_tools_allowlist, "x-aicodebox-tools-allowlist",
     )
     no_tools = _parse_bool_header(x_no_tools)
+
+    # Body's response_format is the OpenAI standard — it wins over the
+    # x-aicodebox-json-schema header (the header was our pre-standard
+    # ergonomic alternative; standard SDKs ship the body field). The
+    # header stays as a fallback for clients that can't set the body
+    # field cleanly.
+    if body_schema is not None and header_schema is not None:
+        log.info(
+            "oai chat: both response_format body field and "
+            "x-aicodebox-json-schema header set — body wins (OAI standard)",
+        )
+    json_schema = body_schema if body_schema is not None else header_schema
 
     # Schema-driven runs need the adapter's verbose event stream so the final
     # assistant turn can be schema-validated (mirrors /run's _derive_output_format).
@@ -481,8 +564,9 @@ async def chat_completions(
         raise HTTPException(
             status_code=400,
             detail=(
-                "x-aicodebox-json-schema is incompatible with stream=true; "
-                "set stream=false for schema-validated responses"
+                "schema-validated responses (x-aicodebox-json-schema header "
+                "or response_format=json_schema / json_object) are "
+                "incompatible with stream=true; set stream=false"
             ),
         )
 
