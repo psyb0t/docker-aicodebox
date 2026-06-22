@@ -4,6 +4,91 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking REST changes (called
 out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.9.1 — 2026-06-19
+
+Fix the schema-mode retry helper so the LLM gets the task context it
+needs to make an informed correction. Without this fix, retries on
+context-sensitive failures (large enum constraints, allowed-values
+lists, domain-specific validation) had ~zero chance of self-correcting
+— the model would re-pick blindly or give up entirely.
+
+### What was broken
+
+`run_with_json_retry` runs each retry attempt with `no_continue=True`
+(fresh session, no conversation history). That design exists for a
+real reason: continuing the session lets the model see "I just said
+X, the user is asking again" and double down on its bad answer.
+
+But the retry prompt the helper built only contained:
+
+- A "your previous response could not be parsed as JSON" header
+- The previous (bad) response verbatim
+- The parse / validation error
+- The schema
+
+It did NOT include the ORIGINAL task. So a retry agent woke up in a
+fresh session, saw "you said `{currency: 'LKR'}` but `LKR` is not
+one of `[EUR, GBP, JPY, USD]`, re-emit valid JSON matching this
+schema" — with no idea what task it was correcting. Was it a brief
+about Sri Lanka where `LKR` would make sense? About the EU? About
+Japan? It had no clue, so it re-picked blindly or fell back to
+free-form prose.
+
+This was masked by tests that used trivial schemas (e.g. `{n: int}`)
+where structural correction works without context. The bug surfaces
+when the schema has constraints the model can only satisfy by knowing
+the original task — enum picks from large allowed lists, domain
+identifiers, structured references.
+
+### The fix
+
+`_json_retry_prompt` now takes the original prompt as a parameter
+and includes it in the retry prompt body. Layout:
+
+```
+Your previous response to the task below could not be parsed as JSON.
+Re-do the task. This time emit ONLY valid JSON matching the schema.
+
+─── Original task ───
+<spec.prompt verbatim>
+
+─── Your previous (invalid) response ───
+<prev_text>
+
+─── Parse / validation error ───
+<parse_error>
+
+Re-emit ONLY valid JSON. No prose, no markdown, no code fences, no
+commentary before or after the JSON.
+
+─── Required schema ───
+<schema JSON>
+```
+
+The `no_continue=True` fresh-session benefit is preserved (no prior
+turn polluting context, no doubling-down on the bad answer), but now
+the model has the task context it needs to make an INFORMED
+correction.
+
+### Tests
+
+- `tests/test_usage_accumulation.py::test_retry_prompt_includes_original_task`
+  (NEW) — regression catch. Drives a 4-value enum mismatch through
+  the retry helper and asserts the retry prompt contains:
+  - the original task verbatim
+  - the bad output
+  - the validation error (mentioning the bad value)
+  - the schema (allowed values re-stated)
+
+Total: 159 tests (158 from v0.9.0 + 1 new). All pass.
+
+### Migration
+
+None — internal correctness fix. Retry prompts are longer now (they
+carry the original task), so each retry attempt costs slightly more
+input tokens. But retries should succeed MORE often, so total token
+usage on schema-mode runs should drop on the net.
+
 ## v0.9.0 — 2026-06-19
 
 Support OpenAI's standard `response_format` body field on

@@ -87,31 +87,56 @@ _to_request = spec_to_request
 
 
 def _json_retry_prompt(
-    prev_text: str, parse_error: str, schema: dict | None,
+    original_prompt: str,
+    prev_text: str,
+    parse_error: str,
+    schema: dict | None,
 ) -> str:
     """Build the re-prompt sent to the agent after a JSON parse failure.
 
-    The agent gets its own prior output back verbatim plus the specific
-    decode / schema-validation error, so it can self-correct rather than
-    guess what went wrong. Schema (when present) is re-stated to keep the
-    correction context-complete — the prior turn may have been many tokens
-    ago for the model.
+    The agent gets THREE pieces of context:
+
+      1. The original task it was asked to do (``original_prompt``).
+      2. Its own previous bad output verbatim.
+      3. The specific decode / schema-validation error.
+
+    Plus the schema (re-stated for context-completeness — the prior
+    turn may have been many tokens ago for the model).
+
+    Including the original task is non-obvious but critical: each retry
+    runs with ``no_continue=True`` (fresh session, no conversation
+    history) to prevent the model from doubling down on its bad answer.
+    Without the original task re-stated, the retry agent sees only
+    "your last JSON was wrong, here's the error, fix it" — and for any
+    error where the correction requires task context (e.g. picking the
+    right enum value from a 700-item allowed-values list), the model
+    has no idea what THE RIGHT value should be. It either re-picks a
+    similar wrong value or falls back to free-form prose. Re-stating
+    the original task gives the retry the context it needs to make an
+    INFORMED correction without sacrificing the fresh-session benefit
+    of not poisoning the context with the prior wrong answer.
     """
     parts = [
-        "Your previous response could not be parsed as JSON.",
-        f"Error: {parse_error}",
+        "Your previous response to the task below could not be parsed "
+        "as JSON. Re-do the task. This time emit ONLY valid JSON "
+        "matching the schema.",
         "",
-        "Previous response:",
+        "─── Original task ───",
+        original_prompt or "(empty)",
+        "",
+        "─── Your previous (invalid) response ───",
         prev_text or "(empty)",
         "",
+        "─── Parse / validation error ───",
+        parse_error,
+        "",
         "Re-emit ONLY valid JSON. No prose, no markdown, no code fences, "
-        "no commentary before or after.",
+        "no commentary before or after the JSON.",
     ]
     if schema is not None:
         parts.append("")
-        parts.append(
-            f"The JSON must conform to this schema: {json.dumps(schema)}",
-        )
+        parts.append("─── Required schema ───")
+        parts.append(json.dumps(schema))
     return "\n".join(parts)
 
 
@@ -211,7 +236,8 @@ def run_with_json_retry(
         retry_spec = dataclasses.replace(
             spec,
             prompt=_json_retry_prompt(
-                result.text or "", parse_error, spec.json_schema,
+                spec.prompt, result.text or "", parse_error,
+                spec.json_schema,
             ),
             no_continue=True,
             resume=None,

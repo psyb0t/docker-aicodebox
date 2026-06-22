@@ -337,6 +337,81 @@ def test_attempts_array_single_entry_when_no_retries(
     }
 
 
+def test_retry_prompt_includes_original_task(usage_adapter, monkeypatch):
+    """Regression: the retry prompt MUST include the original task so
+    the LLM (running in a fresh no_continue session) has the context
+    needed to make an informed correction. Without it, errors that
+    require task context to fix (e.g. picking the right enum value
+    from a large allowed-values list) make the retry re-pick blindly.
+
+    Before this fix the retry prompt only had: bad output + parse error
+    + schema. Now it ALSO carries the original spec.prompt verbatim.
+    """
+    del usage_adapter
+    schema = {
+        "type": "object",
+        "properties": {
+            "currency": {"enum": ["EUR", "GBP", "JPY", "USD"]},
+        },
+        "required": ["currency"],
+    }
+    original_task = (
+        "Write a brief about the Sri Lanka rate hike on 2026-06-19. "
+        "Pick the currency that's relevant to the story."
+    )
+
+    captured_prompts: list[str] = []
+
+    def fake(spec, proc_hook=None):
+        del proc_hook
+        captured_prompts.append(spec.prompt)
+        idx = len(captured_prompts)
+        # First attempt: invalid currency. Second: valid.
+        if idx == 1:
+            return RunResult(
+                text='{"currency": "LKR"}',
+                raw_stdout='{"currency": "LKR"}', raw_stderr="",
+                exit_code=0,
+                usage={"input_tokens": 100, "output_tokens": 5},
+            )
+        return RunResult(
+            text='{"currency": "USD"}',
+            raw_stdout='{"currency": "USD"}', raw_stderr="",
+            exit_code=0,
+            usage={"input_tokens": 200, "output_tokens": 5},
+        )
+
+    monkeypatch.setattr(runner_mod, "run", fake)
+
+    spec = RunSpec(
+        prompt=original_task,
+        workspace="/tmp",
+        json_schema=schema,
+        output_format="json-verbose",
+    )
+    _, parsed, parse_error, retries = run_with_json_retry(spec)
+
+    assert parse_error is None
+    assert parsed == {"currency": "USD"}
+    assert retries == 1
+    assert len(captured_prompts) == 2
+
+    # First attempt: original task verbatim.
+    assert captured_prompts[0] == original_task
+
+    # Second attempt (the retry): must contain BOTH the original task
+    # AND the bad-output context + error + schema. Without the original
+    # task the model can't correct an enum mismatch sensibly.
+    retry_prompt = captured_prompts[1]
+    assert original_task in retry_prompt, (
+        "retry prompt missing original task — the model has no idea "
+        "what task it's correcting"
+    )
+    assert '{"currency": "LKR"}' in retry_prompt  # the bad output
+    assert "LKR" in retry_prompt  # the validation error mentions LKR
+    assert "EUR" in retry_prompt  # the schema is re-stated
+
+
 def test_usage_handles_missing_usage_on_some_attempts(
     usage_adapter, monkeypatch,
 ):
