@@ -4,6 +4,111 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking REST changes (called
 out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.10.0 — 2026-06-27
+
+Cheap schema-mode retries via ephemeral per-request workspaces +
+session continuation. Cuts token cost on retrying schema requests by
+roughly 100x for large prompts.
+
+### What was broken
+
+`/openai/v1/chat/completions` with a JSON schema would replay the
+full original prompt on every retry attempt:
+
+```
+Attempt 1: 100k input + bad output
+Attempt 2: 100k input (replayed) + bad output
+Attempt 3: 100k input (replayed) + bad output
+Attempt 4: 100k input (replayed) + good output
+Total:     400k input tokens billed for ONE conceptual request
+```
+
+The replay was a workaround for v0.9.1's `no_continue=True`
+fresh-session retry mode — the agent had no conversation history, so
+the prompt had to carry the original task verbatim every time.
+
+### What v0.10.0 does
+
+- When a schema-mode request hits `/openai/v1/chat/completions` AND
+  the caller didn't set `x-aicodebox-workspace`, the route allocates
+  an ephemeral workspace at `/tmp/aicodebox/<uuid>/` for this request
+  only. The directory is cleaned up in `finally` after the request
+  returns (success, 422, 500 — any path).
+- `run_with_json_retry` is told `continue_session_on_retry=True`.
+  Retries now run with `no_continue=False` so the adapter
+  session-continues the conversation in the workspace. The retry
+  prompt is a short corrective message (error + directive + schema,
+  roughly 500 tokens) instead of the full original task.
+
+```
+Attempt 1: 100k input + bad output
+Attempt 2:   500 input (continuation correction) + bad output
+Attempt 3:   500 input (continuation correction) + bad output
+Attempt 4:   500 input (continuation correction) + good output
+Total:     about 101.5k input tokens — under 1/3 of v0.9.1's cost
+```
+
+When the caller DOES set `x-aicodebox-workspace` (their dir, possibly
+shared with other sessions), the route falls back to fresh-session
+retries (v0.9.1 behavior). We can't safely session-continue in a
+workspace whose contents we don't control.
+
+### Library-level change
+
+`run_with_json_retry` gains a `continue_session_on_retry` parameter
+(default `False` — `/run` callers see no behavior change). When
+`True`, each retry's spec is built with `no_continue=False` and the
+prompt is the new minimal `_json_retry_prompt_continue` form. When
+`False`, behavior is identical to v0.9.1 (`no_continue=True` plus
+`_json_retry_prompt_fresh` with the original task re-stated).
+
+### Safety
+
+`_cleanup_ephemeral_workspace` refuses to `rmtree` any path that
+doesn't start with `EPHEMERAL_WORKSPACE_ROOT + "/"`. Defense in
+depth against a bug ever passing a non-ephemeral path. Cleanup
+failures log a warning but never raise (cleanup runs in `finally`
+and must not mask the original exception).
+
+The stream+schema 400 check is moved earlier in the request
+lifecycle so a rejected request doesn't leave a
+`/tmp/aicodebox/<uuid>/` behind.
+
+### Tests
+
+- `tests/test_usage_accumulation.py::test_continue_mode_retry_prompt_is_minimal`
+  (NEW) — asserts the retry spec has `no_continue=False`, the retry
+  prompt does NOT contain the original task, and the prompt is under
+  1000 chars.
+- `tests/test_oai_schema.py::test_schema_allocates_ephemeral_workspace_and_uses_continuation`
+  (NEW) — TestClient end-to-end: schema request + no workspace header
+  → ephemeral allocated under `EPHEMERAL_WORKSPACE_ROOT`, retry
+  helper called with `continue_session_on_retry=True`, dir cleaned
+  up after response.
+- `tests/test_oai_schema.py::test_schema_with_caller_workspace_does_not_allocate_ephemeral`
+  (NEW) — schema + caller workspace header → no ephemeral
+  allocation, retry helper called with
+  `continue_session_on_retry=False`.
+- `tests/test_oai_schema.py::test_stream_plus_schema_400_does_not_leak_ephemeral`
+  (NEW) — stream+schema rejection happens before ephemeral
+  allocation; no `/tmp/aicodebox/<uuid>/` is created on the 400 path.
+- `tests/test_oai_schema.py::test_ephemeral_cleanup_refuses_path_outside_root`
+  (NEW) — `_cleanup_ephemeral_workspace` refuses paths outside its
+  designated root.
+
+Total: 164 tests (159 from v0.9.1 + 5 new). All pass.
+
+### Migration
+
+None for `/openai/v1/chat/completions` callers — purely additive
+token savings. Existing schema-mode requests with no workspace
+header now cost roughly 100x less on retries.
+
+`/run` callers see no change — the helper's default
+(`continue_session_on_retry=False`) preserves v0.9.1 behavior. A
+`/run` caller that wants the cheap retries can opt in by setting up
+a per-request workspace themselves; the helper supports the flag now.
+
 ## v0.9.1 — 2026-06-19
 
 Fix the schema-mode retry helper so the LLM gets the task context it

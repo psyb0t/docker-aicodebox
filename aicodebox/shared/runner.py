@@ -86,35 +86,23 @@ def spec_to_request(
 _to_request = spec_to_request
 
 
-def _json_retry_prompt(
+def _json_retry_prompt_fresh(
     original_prompt: str,
     prev_text: str,
     parse_error: str,
     schema: dict | None,
 ) -> str:
-    """Build the re-prompt sent to the agent after a JSON parse failure.
+    """Build the re-prompt for FRESH-SESSION retry mode (no continuation).
 
-    The agent gets THREE pieces of context:
+    Used when ``run_with_json_retry`` runs each retry with
+    ``no_continue=True`` — agent has no conversation history, so the
+    retry prompt must carry the original task + bad output + error +
+    schema in full. Expensive for large prompts (every retry re-sends
+    the original context) but works on any workspace, including shared
+    ones that might have unrelated sessions in them.
 
-      1. The original task it was asked to do (``original_prompt``).
-      2. Its own previous bad output verbatim.
-      3. The specific decode / schema-validation error.
-
-    Plus the schema (re-stated for context-completeness — the prior
-    turn may have been many tokens ago for the model).
-
-    Including the original task is non-obvious but critical: each retry
-    runs with ``no_continue=True`` (fresh session, no conversation
-    history) to prevent the model from doubling down on its bad answer.
-    Without the original task re-stated, the retry agent sees only
-    "your last JSON was wrong, here's the error, fix it" — and for any
-    error where the correction requires task context (e.g. picking the
-    right enum value from a 700-item allowed-values list), the model
-    has no idea what THE RIGHT value should be. It either re-picks a
-    similar wrong value or falls back to free-form prose. Re-stating
-    the original task gives the retry the context it needs to make an
-    INFORMED correction without sacrificing the fresh-session benefit
-    of not poisoning the context with the prior wrong answer.
+    For the cheap session-continuation mode see
+    ``_json_retry_prompt_continue``.
     """
     parts = [
         "Your previous response to the task below could not be parsed "
@@ -137,6 +125,39 @@ def _json_retry_prompt(
         parts.append("")
         parts.append("─── Required schema ───")
         parts.append(json.dumps(schema))
+    return "\n".join(parts)
+
+
+def _json_retry_prompt_continue(
+    parse_error: str, schema: dict | None,
+) -> str:
+    """Build the re-prompt for SESSION-CONTINUATION retry mode.
+
+    Used when ``run_with_json_retry`` is told the caller's workspace is
+    isolated to this request and the adapter can session-continue
+    (``no_continue=False`` on the retry spec). The agent already has the
+    original task + its bad output in the live conversation — we just
+    point at the error and ask for a corrected re-emit. Massively
+    cheaper than the fresh-session form (each retry adds ~500 tokens
+    instead of replaying the full original prompt).
+
+    The schema is re-stated even in continuation mode — the prior turn
+    may have been many tokens ago and models are notably better at
+    constraint satisfaction when the constraint is fresh on screen.
+    """
+    parts = [
+        "Your previous response could not be parsed as valid JSON "
+        "matching the schema.",
+        "",
+        f"Error: {parse_error}",
+        "",
+        "Re-emit ONLY valid JSON matching the schema. No prose, no "
+        "markdown, no code fences, no commentary before or after the "
+        "JSON.",
+    ]
+    if schema is not None:
+        parts.append("")
+        parts.append(f"Schema: {json.dumps(schema)}")
     return "\n".join(parts)
 
 
@@ -174,6 +195,7 @@ def run_with_json_retry(
     spec: RunSpec,
     proc_hook: ProcHook = None,
     max_retries: int = JSON_RETRY_MAX,
+    continue_session_on_retry: bool = False,
 ) -> tuple[RunResult, Any, str | None, int]:
     """Run a schema-validated spec with up to ``max_retries`` re-prompts on
     parse / validation failure. Returns
@@ -184,19 +206,40 @@ def run_with_json_retry(
     ``result.text`` (the final assistant turn) regardless of which mode
     the adapter ran in. Retries abort early if any attempt exits non-zero
     — that means the agent itself failed (timeout, missing binary,
-    internal error) and replaying the prompt won't help. Each retry uses
-    ``no_continue=True`` so the model gets a fresh session whose only
-    history is the corrective prompt; mixing the bad turn into ongoing
-    context tends to make models double down on it.
+    internal error) and replaying the prompt won't help.
+
+    ``continue_session_on_retry`` chooses between two retry strategies:
+
+      * **False (default)** — fresh-session retry. Each attempt runs
+        with ``no_continue=True`` and the retry prompt carries the
+        original task + bad output + error + schema (so the agent has
+        the task context). Safe on any workspace (including shared
+        ones with unrelated sessions), but each retry re-sends the
+        full original prompt: a 100k-token request that needs 3
+        retries pays 400k input tokens.
+
+      * **True** — session-continuation retry. Each attempt runs with
+        ``no_continue=False`` so the agent picks up the conversation
+        from its own session storage in the workspace. The retry
+        prompt is a short corrective message (just the error + the
+        directive to re-emit). Massively cheaper (~500 tokens per
+        retry vs the full prompt), but REQUIRES the workspace to be
+        isolated to this request — if the workspace contains other
+        sessions, the agent may continue the wrong one. Callers using
+        this mode are responsible for guaranteeing isolation
+        (typically by allocating an ephemeral per-request workspace
+        like ``/tmp/aicodebox/<uuid>/``).
 
     ``final_result.usage`` is the SUMMED usage across every attempt
     (initial + each retry). Reporting only the last attempt's usage
     would under-count what the provider actually billed, since every
     attempt is its own paid LLM call.
     """
+    retry_mode = "continue" if continue_session_on_retry else "fresh"
     log.info(
-        "schema retry: starting (max_retries=%d, schema_keys=%s)",
+        "schema retry: starting (max_retries=%d, mode=%s, schema_keys=%s)",
         max_retries,
+        retry_mode,
         list(spec.json_schema.keys()) if spec.json_schema else None,
     )
     result = run(spec, proc_hook=proc_hook)
@@ -230,16 +273,22 @@ def run_with_json_retry(
     while parse_error and result.exit_code == 0 and retries < max_retries:
         retries += 1
         log.info(
-            "schema retry: re-prompting %d/%d (error: %s)",
-            retries, max_retries, parse_error,
+            "schema retry: re-prompting %d/%d mode=%s (error: %s)",
+            retries, max_retries, retry_mode, parse_error,
         )
-        retry_spec = dataclasses.replace(
-            spec,
-            prompt=_json_retry_prompt(
+        if continue_session_on_retry:
+            retry_prompt = _json_retry_prompt_continue(
+                parse_error, spec.json_schema,
+            )
+        else:
+            retry_prompt = _json_retry_prompt_fresh(
                 spec.prompt, result.text or "", parse_error,
                 spec.json_schema,
-            ),
-            no_continue=True,
+            )
+        retry_spec = dataclasses.replace(
+            spec,
+            prompt=retry_prompt,
+            no_continue=not continue_session_on_retry,
             resume=None,
         )
         result = run(retry_spec, proc_hook=proc_hook)

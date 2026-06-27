@@ -25,6 +25,7 @@ import json
 import logging
 import mimetypes
 import os
+import shutil
 import socket
 import time
 import urllib.parse
@@ -58,6 +59,14 @@ UPLOAD_DIR = Path(ROOT_WORKSPACE) / "_oai_uploads"
 UPLOAD_TTL_SECONDS = 24 * 3600
 REMOTE_IMAGE_TIMEOUT = 30
 REMOTE_IMAGE_MAX_BYTES = 50 * 1024 * 1024
+
+# Per-request ephemeral workspaces live under here. Schema-mode requests
+# that didn't specify a workspace get one of these so the retry helper
+# can session-continue cheaply (the agent's session storage lives in
+# the workspace dir). Cleaned up by the route in `finally:` after the
+# run completes (success OR failure), so this dir should normally be
+# empty between requests.
+EPHEMERAL_WORKSPACE_ROOT = Path("/tmp/aicodebox")
 
 router = APIRouter(dependencies=[Depends(check_bearer)])
 
@@ -317,6 +326,52 @@ def models() -> dict[str, Any]:
     }
 
 
+def _allocate_ephemeral_workspace() -> str:
+    """Create a per-request workspace under ``/tmp/aicodebox/<uuid>/``.
+
+    Used when the caller hits the OAI route with schema-mode set but no
+    ``x-aicodebox-workspace`` header. Each retry attempt inside
+    ``run_with_json_retry`` continues the agent's session in this dir,
+    so the model has the original conversation in context — no need to
+    replay the full prompt (which can be 100k+ tokens). Caller must
+    invoke ``_cleanup_ephemeral_workspace`` in ``finally``.
+
+    The root dir is created mode 0o700 — agent session state (which
+    may contain partial model context / tool-call traces) is
+    owner-only. The per-request subdir inherits the same restriction.
+    """
+    EPHEMERAL_WORKSPACE_ROOT.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path = EPHEMERAL_WORKSPACE_ROOT / uuid.uuid4().hex
+    path.mkdir(mode=0o700)
+    log.debug("ephemeral workspace allocated: %s", path)
+    return str(path)
+
+
+def _cleanup_ephemeral_workspace(path: str) -> None:
+    """Tear down an ephemeral workspace. Safe to call multiple times.
+
+    Refuses to delete anything outside ``EPHEMERAL_WORKSPACE_ROOT`` —
+    belt-and-braces against a malformed path being passed in. Logs a
+    warning on cleanup failure (we want to know if /tmp is filling up)
+    but never raises — cleanup runs in ``finally`` and must not mask
+    the original exception.
+    """
+    root = str(EPHEMERAL_WORKSPACE_ROOT) + "/"
+    if not path.startswith(root):
+        log.warning(
+            "ephemeral workspace cleanup refused — path outside root: %s",
+            path,
+        )
+        return
+    try:
+        shutil.rmtree(path, ignore_errors=False)
+        log.debug("ephemeral workspace cleaned: %s", path)
+    except OSError as exc:
+        log.warning(
+            "ephemeral workspace cleanup failed: %s (%s)", path, exc,
+        )
+
+
 def _parse_bool_header(value: str | None) -> bool:
     return value is not None and value.strip().lower() in ("1", "true", "yes")
 
@@ -516,11 +571,6 @@ async def chat_completions(
     if not prompt:
         raise HTTPException(status_code=400, detail="no user message provided")
 
-    try:
-        workspace = resolve_workspace(x_workspace)
-    except WorkspaceError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
     no_continue = x_continue is None or x_continue.lower() not in ("1", "true", "yes")
     requested_model = _strip_provider_prefix(req.model or "")
     # "pi" (or whatever the adapter's synthetic id is) is a placeholder, not a
@@ -553,13 +603,11 @@ async def chat_completions(
         )
     json_schema = body_schema if body_schema is not None else header_schema
 
-    # Schema-driven runs need the adapter's verbose event stream so the final
-    # assistant turn can be schema-validated (mirrors /run's _derive_output_format).
-    schema_output_format = "json-verbose" if json_schema is not None else None
-
     # Streaming + schema is incompatible: schema validation requires the
     # complete response. We can't validate while still emitting deltas, and
     # mid-stream parse failure has no clean way to recover via the SSE wire.
+    # Check this BEFORE any workspace allocation so we don't leak an
+    # ephemeral dir on the 400 path.
     if req.stream and json_schema is not None:
         raise HTTPException(
             status_code=400,
@@ -569,6 +617,34 @@ async def chat_completions(
                 "incompatible with stream=true; set stream=false"
             ),
         )
+
+    # Workspace strategy:
+    #   - Caller provided `x-aicodebox-workspace` → use as-is (their dir,
+    #     their responsibility).
+    #   - Schema mode + no caller workspace → allocate ephemeral under
+    #     /tmp/aicodebox/<uuid>/ so the retry helper can session-continue
+    #     cheaply. The agent's session storage lives in the workspace,
+    #     so isolating it per request lets `no_continue=False` on retries
+    #     pick up THIS request's conversation (no cross-request bleed).
+    #     Cleaned up in `finally` after the run completes.
+    #   - Non-schema mode + no caller workspace → fall back to
+    #     resolve_workspace (default root). No retries fire, no session
+    #     continuation matters, no need for isolation overhead.
+    ephemeral_workspace: str | None = None
+    if json_schema is not None and x_workspace is None:
+        ephemeral_workspace = _allocate_ephemeral_workspace()
+        workspace = ephemeral_workspace
+    else:
+        try:
+            workspace = resolve_workspace(x_workspace)
+        except WorkspaceError as exc:
+            raise HTTPException(
+                status_code=400, detail=str(exc),
+            ) from exc
+
+    # Schema-driven runs need the adapter's verbose event stream so the final
+    # assistant turn can be schema-validated (mirrors /run's _derive_output_format).
+    schema_output_format = "json-verbose" if json_schema is not None else None
 
     if req.stream:
         return await _stream_response(
@@ -642,8 +718,15 @@ async def chat_completions(
         # caller sees structurally clean output regardless of how the LLM
         # originally formatted it.
         if json_schema is not None:
+            # Cheap-retry mode is safe IFF the workspace is isolated to
+            # this request — that's exactly what the ephemeral workspace
+            # gives us. With a caller-provided workspace we can't know
+            # whether other sessions live there, so we fall back to
+            # fresh-session retries (more expensive but safe).
             result, parsed, parse_error, retries = run_with_json_retry(
-                spec, proc_hook=hook,
+                spec,
+                proc_hook=hook,
+                continue_session_on_retry=ephemeral_workspace is not None,
             )
             if result.exit_code != 0:
                 log.warning(
@@ -701,6 +784,8 @@ async def chat_completions(
         )
     finally:
         RUNS.release_workspace(workspace)
+        if ephemeral_workspace is not None:
+            _cleanup_ephemeral_workspace(ephemeral_workspace)
     if err is not None:
         raise HTTPException(status_code=500, detail=err)
 

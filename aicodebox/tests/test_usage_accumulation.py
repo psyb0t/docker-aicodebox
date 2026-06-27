@@ -337,6 +337,83 @@ def test_attempts_array_single_entry_when_no_retries(
     }
 
 
+def test_continue_mode_retry_prompt_is_minimal(usage_adapter, monkeypatch):
+    """When ``continue_session_on_retry=True``, the retry prompt is a
+    short corrective message (error + directive + schema). The original
+    task is NOT re-stated — the agent has it in its live session via
+    ``no_continue=False``. Massive token savings vs fresh-session mode.
+    """
+    del usage_adapter
+    schema = {
+        "type": "object",
+        "properties": {"n": {"type": "integer"}},
+        "required": ["n"],
+    }
+    original_task = "Write a brief summary about today's market events."
+
+    captured_prompts: list[str] = []
+    captured_no_continue: list[bool] = []
+
+    def fake(spec, proc_hook=None):
+        del proc_hook
+        captured_prompts.append(spec.prompt)
+        captured_no_continue.append(spec.no_continue)
+        idx = len(captured_prompts)
+        if idx == 1:
+            return RunResult(
+                text='{"n": "bad"}',
+                raw_stdout='{"n": "bad"}',
+                raw_stderr="",
+                exit_code=0,
+                usage={"input_tokens": 5000, "output_tokens": 10},
+            )
+        return RunResult(
+            text='{"n": 7}',
+            raw_stdout='{"n": 7}',
+            raw_stderr="",
+            exit_code=0,
+            usage={"input_tokens": 100, "output_tokens": 5},
+        )
+
+    monkeypatch.setattr(runner_mod, "run", fake)
+
+    spec = RunSpec(
+        prompt=original_task,
+        workspace="/tmp/test-ephemeral",
+        json_schema=schema,
+        output_format="json-verbose",
+        no_continue=True,
+    )
+    _, parsed, parse_error, retries = run_with_json_retry(
+        spec, continue_session_on_retry=True,
+    )
+
+    assert parse_error is None
+    assert parsed == {"n": 7}
+    assert retries == 1
+    assert len(captured_prompts) == 2
+
+    # First attempt: caller's prompt + caller's no_continue=True
+    assert captured_prompts[0] == original_task
+    assert captured_no_continue[0] is True
+
+    # Second attempt (the retry): MINIMAL corrective prompt + force
+    # no_continue=False so the adapter session-continues the workspace.
+    retry_prompt = captured_prompts[1]
+    assert captured_no_continue[1] is False
+    # Original task NOT re-stated (it's in the live session via continue)
+    assert original_task not in retry_prompt
+    # But error + schema present so the model knows what to fix
+    assert "could not be parsed" in retry_prompt
+    assert "valid JSON" in retry_prompt
+    # Retry prompt should be small — much smaller than the original
+    # (would have been 100k+ in the real scenario this fixes)
+    assert len(retry_prompt) < 1000, (
+        f"continuation retry prompt should be minimal, "
+        f"got {len(retry_prompt)} chars"
+    )
+
+
 def test_retry_prompt_includes_original_task(usage_adapter, monkeypatch):
     """Regression: the retry prompt MUST include the original task so
     the LLM (running in a fresh no_continue session) has the context

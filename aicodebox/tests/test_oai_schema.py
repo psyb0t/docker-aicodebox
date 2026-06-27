@@ -539,3 +539,185 @@ def test_stream_plumbs_runspec_headers(client, monkeypatch):
     assert spec.tools_allowlist == ["read"]
     assert spec.timeout_seconds == 42
     assert spec.resume == "sess-xyz"
+
+
+# ── ephemeral workspace + session-continuation retry ────────────────────────
+
+
+def test_schema_allocates_ephemeral_workspace_and_uses_continuation(
+    client, monkeypatch, tmp_path,
+):
+    """Schema mode + no caller workspace → route allocates an ephemeral
+    /tmp/aicodebox/<uuid>/ workspace AND tells run_with_json_retry to use
+    session-continuation retries. The first run sees the allocated
+    workspace; if a retry fires, it would run with no_continue=False."""
+    from aicodebox.modes.api import oai as oai_mod
+
+    # Redirect ephemeral root into pytest's tmp so cleanup is contained.
+    monkeypatch.setattr(
+        oai_mod, "EPHEMERAL_WORKSPACE_ROOT", tmp_path / "aicodebox-eph",
+    )
+
+    captured: dict = {"specs": [], "continue_flag": None, "workspace": None}
+
+    real_run_with = oai_mod.run_with_json_retry
+
+    def wrapped(spec, proc_hook=None, max_retries=3,
+                continue_session_on_retry=False):
+        captured["continue_flag"] = continue_session_on_retry
+        captured["workspace"] = spec.workspace
+        return real_run_with(
+            spec,
+            proc_hook=proc_hook,
+            max_retries=max_retries,
+            continue_session_on_retry=continue_session_on_retry,
+        )
+
+    monkeypatch.setattr(oai_mod, "run_with_json_retry", wrapped)
+
+    _patch_runner_sequence(monkeypatch, [RunResult(
+        text='{"ok": true}', raw_stdout='{"ok": true}', raw_stderr="",
+        exit_code=0,
+    )])
+
+    resp = client.post(
+        "/openai/v1/chat/completions",
+        json={
+            "model": "m1",
+            "messages": [{"role": "user", "content": "hi"}],
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {"name": "x", "schema": {"type": "object"}},
+            },
+        },
+    )
+    assert resp.status_code == 200
+    assert captured["continue_flag"] is True, (
+        "schema mode + no caller workspace should use session-continuation"
+    )
+    workspace = captured["workspace"]
+    assert workspace is not None
+    assert workspace.startswith(
+        str(tmp_path / "aicodebox-eph") + "/",
+    ), f"workspace should live under ephemeral root, got {workspace}"
+
+    # Cleanup: the ephemeral dir must be gone after the request returns.
+    from pathlib import Path
+    assert not Path(workspace).exists(), (
+        f"ephemeral workspace {workspace} should be cleaned up after request"
+    )
+
+
+def test_schema_with_caller_workspace_does_not_allocate_ephemeral(
+    client, monkeypatch, tmp_path,
+):
+    """When the caller provides `x-aicodebox-workspace`, the route uses
+    that as-is and disables session-continuation retries (we can't know
+    whether other sessions live in the caller's workspace)."""
+    from aicodebox.modes.api import oai as oai_mod
+
+    caller_ws = str(tmp_path / "caller-ws")
+    (tmp_path / "caller-ws").mkdir()
+
+    # Bypass the production workspace.resolve sandboxing — that's its own
+    # test surface and isn't what this case is checking. We just want to
+    # verify the route's branch logic: caller header set → use as-is +
+    # disable continuation.
+    monkeypatch.setattr(
+        oai_mod, "resolve_workspace", lambda x: x or "/workspace",
+    )
+
+    # Don't actually let the route allocate one even if it tried.
+    monkeypatch.setattr(
+        oai_mod, "EPHEMERAL_WORKSPACE_ROOT", tmp_path / "should-not-exist",
+    )
+
+    captured: dict = {"continue_flag": None, "workspace": None}
+    real_run_with = oai_mod.run_with_json_retry
+
+    def wrapped(spec, proc_hook=None, max_retries=3,
+                continue_session_on_retry=False):
+        captured["continue_flag"] = continue_session_on_retry
+        captured["workspace"] = spec.workspace
+        return real_run_with(
+            spec,
+            proc_hook=proc_hook,
+            max_retries=max_retries,
+            continue_session_on_retry=continue_session_on_retry,
+        )
+
+    monkeypatch.setattr(oai_mod, "run_with_json_retry", wrapped)
+    _patch_runner_sequence(monkeypatch, [RunResult(
+        text='{"ok": true}', raw_stdout='{"ok": true}', raw_stderr="",
+        exit_code=0,
+    )])
+
+    resp = client.post(
+        "/openai/v1/chat/completions",
+        json={
+            "model": "m1",
+            "messages": [{"role": "user", "content": "hi"}],
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {"name": "x", "schema": {"type": "object"}},
+            },
+        },
+        headers={"x-aicodebox-workspace": caller_ws},
+    )
+    assert resp.status_code == 200
+    assert captured["continue_flag"] is False, (
+        "caller-provided workspace should disable continuation "
+        "(we can't guarantee isolation)"
+    )
+    assert captured["workspace"] == caller_ws
+    # Ephemeral root must NOT have been touched.
+    assert not (tmp_path / "should-not-exist").exists()
+
+
+def test_stream_plus_schema_400_does_not_leak_ephemeral(
+    client, monkeypatch, tmp_path,
+):
+    """The stream+schema 400 check happens BEFORE ephemeral allocation —
+    so a rejected request doesn't leave a /tmp/aicodebox/<uuid>/ behind."""
+    from aicodebox.modes.api import oai as oai_mod
+    eph_root = tmp_path / "aicodebox-eph"
+    monkeypatch.setattr(oai_mod, "EPHEMERAL_WORKSPACE_ROOT", eph_root)
+
+    resp = client.post(
+        "/openai/v1/chat/completions",
+        json={
+            "model": "m1",
+            "messages": [{"role": "user", "content": "x"}],
+            "stream": True,
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {"name": "x", "schema": {"type": "object"}},
+            },
+        },
+    )
+    assert resp.status_code == 400
+    # No subdirs created — the 400 fired before _allocate_ephemeral_workspace
+    if eph_root.exists():
+        assert not any(eph_root.iterdir()), (
+            "stream+schema 400 must not allocate an ephemeral workspace"
+        )
+
+
+def test_ephemeral_cleanup_refuses_path_outside_root(monkeypatch, tmp_path):
+    """Safety: _cleanup_ephemeral_workspace must refuse to rmtree anything
+    outside EPHEMERAL_WORKSPACE_ROOT (defense in depth — even if the
+    path passed in came from a bug, we don't wreck the filesystem)."""
+    from aicodebox.modes.api import oai as oai_mod
+    monkeypatch.setattr(
+        oai_mod, "EPHEMERAL_WORKSPACE_ROOT", tmp_path / "aicodebox-eph",
+    )
+
+    victim = tmp_path / "important-stuff"
+    victim.mkdir()
+    (victim / "do-not-delete.txt").write_text("precious")
+
+    # The helper must refuse and the file must still exist after.
+    oai_mod._cleanup_ephemeral_workspace(str(victim))
+    assert (victim / "do-not-delete.txt").exists(), (
+        "_cleanup_ephemeral_workspace must refuse paths outside the root"
+    )
