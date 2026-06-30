@@ -25,6 +25,7 @@ from aicodebox.modes.api.auth import check_bearer
 from aicodebox.modes.api.files import router as files_router
 from aicodebox.modes.api.oai import (
     purge_stale_uploads as _purge_oai_uploads,
+    purge_stale_workspaces as _purge_oai_workspaces,
     router as oai_router,
 )
 from aicodebox.modes.api.runs import REGISTRY as RUNS
@@ -73,6 +74,12 @@ async def _purge_loop() -> None:
                 log.info("purged %d stale oai uploads", u)
         except Exception:  # noqa: BLE001
             log.exception("oai upload purge error")
+        try:
+            w = _purge_oai_workspaces()
+            if w:
+                log.info("purged %d stale oai ephemeral workspaces", w)
+        except Exception:  # noqa: BLE001
+            log.exception("oai workspace purge error")
         await asyncio.sleep(PURGE_INTERVAL_SECONDS)
 
 

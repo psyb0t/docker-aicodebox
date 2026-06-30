@@ -4,6 +4,69 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking REST changes (called
 out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.10.1 — 2026-06-28
+
+Add the periodic safety-net purge that v0.10.0 forgot. Without it,
+ephemeral workspace orphans accumulated under `/tmp/aicodebox/` on
+abnormal exits (SIGKILL mid-request, container restart with leftover
+root, cleanup-helper itself failing) — the per-request `finally`
+cleanup couldn't reach those cases.
+
+### What was missing in v0.10.0
+
+`chat_completions` cleans up its allocated `/tmp/aicodebox/<uuid>/`
+in a `finally` block on every code path (success, 422, 500, 400). But
+`finally` doesn't run when the process is SIGKILL'd, when the
+container restarts with the previous run's root still on disk, or
+when `_cleanup_ephemeral_workspace` itself raises (permission error
+after a UID change, etc.). In those cases the dir stayed around
+forever.
+
+The OAI uploads dir (`UPLOAD_DIR`) already had a periodic
+`purge_stale_uploads` wired into `server._purge_loop`. Ephemeral
+workspaces didn't — easy miss, fixed here.
+
+### The fix
+
+New `aicodebox.modes.api.oai.purge_stale_workspaces(now=None)`:
+
+- Iterates `EPHEMERAL_WORKSPACE_ROOT` (direct children only).
+- Skips non-directory entries.
+- Skips dirs whose `mtime` is newer than
+  `EPHEMERAL_WORKSPACE_TTL_SECONDS` (3600s = 1h; covers worst-case
+  schema runs by an order of magnitude).
+- `shutil.rmtree`s the rest.
+- Returns the count actually purged.
+- Logs a WARN per skipped/failed entry so leaks stay visible in
+  operator logs.
+
+Wired into `server._purge_loop`, which runs every
+`PURGE_INTERVAL_SECONDS` (600s = 10min) alongside the existing
+`RUNS.purge_stale()` and `_purge_oai_uploads()` calls.
+
+`purge_stale_uploads` also gained a WARN log on its skipped-entry
+`OSError` path — previously silently `continue`d.
+
+### Tests
+
+- `tests/test_oai_schema.py::test_purge_stale_workspaces_removes_orphans_older_than_ttl`
+  (NEW) — seeds 2 stale + 1 fresh dir, asserts only the stale ones
+  get rmtree'd.
+- `tests/test_oai_schema.py::test_purge_stale_workspaces_handles_missing_root`
+  (NEW) — no-op when the root dir doesn't exist yet (first server
+  boot, no schema requests ever fired).
+- `tests/test_oai_schema.py::test_purge_stale_workspaces_ignores_files`
+  (NEW) — stray non-dir entries (someone dropped a file in the root)
+  are left alone; purge only touches the per-request subdirs.
+
+Total: 167 tests (164 from v0.10.0 + 3 new). All pass.
+
+### Migration
+
+None — pure safety-net addition. No public surface changed. Existing
+v0.10.0 deployments will accumulate stale dirs until restarted; the
+v0.10.1 image will sweep them on the first purge-loop tick.
+
 ## v0.10.0 — 2026-06-27
 
 Cheap schema-mode retries via ephemeral per-request workspaces +

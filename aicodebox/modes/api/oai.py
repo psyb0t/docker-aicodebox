@@ -65,8 +65,14 @@ REMOTE_IMAGE_MAX_BYTES = 50 * 1024 * 1024
 # can session-continue cheaply (the agent's session storage lives in
 # the workspace dir). Cleaned up by the route in `finally:` after the
 # run completes (success OR failure), so this dir should normally be
-# empty between requests.
+# empty between requests. The periodic ``purge_stale_workspaces`` is
+# the safety net for orphans left by SIGKILL / crash / container
+# restart / cleanup-helper failure.
 EPHEMERAL_WORKSPACE_ROOT = Path("/tmp/aicodebox")
+# Anything older than this in EPHEMERAL_WORKSPACE_ROOT is treated as an
+# orphan. 1h covers worst-case schema runs (long agent thinking + 3
+# retries) by an order of magnitude.
+EPHEMERAL_WORKSPACE_TTL_SECONDS = 3600
 
 router = APIRouter(dependencies=[Depends(check_bearer)])
 
@@ -930,9 +936,62 @@ def purge_stale_uploads(now: float | None = None) -> int:
             if entry.is_file() and entry.stat().st_mtime < cutoff:
                 entry.unlink()
                 purged += 1
-        except OSError:
+        except OSError as exc:
+            log.warning(
+                "stale upload purge skipped: %s (%s)", entry, exc,
+            )
             continue
     return purged
 
 
-__all__ = ["router", "purge_stale_uploads", "UPLOAD_DIR"]
+def purge_stale_workspaces(now: float | None = None) -> int:
+    """Remove ephemeral workspaces older than ``EPHEMERAL_WORKSPACE_TTL_SECONDS``.
+
+    Per-request cleanup runs in the route's ``finally`` block, so under
+    normal operation the root dir stays empty between requests. This
+    sweep is the safety net for the abnormal cases the ``finally``
+    can't cover:
+
+      - process SIGKILL'd mid-request
+      - container restart with a leftover root from the previous run
+      - cleanup-helper itself failed (e.g. permission error after a
+        process changed uid mid-flight)
+
+    Returns the number of directories actually purged. Logs a warning
+    for each entry it had to skip (permission denied, race with a live
+    request that just freed the dir, etc.) so leaks stay visible in
+    operator logs rather than silently growing.
+    """
+    if not EPHEMERAL_WORKSPACE_ROOT.exists():
+        return 0
+    cutoff = (now or time.time()) - EPHEMERAL_WORKSPACE_TTL_SECONDS
+    purged = 0
+    for entry in EPHEMERAL_WORKSPACE_ROOT.iterdir():
+        try:
+            if not entry.is_dir():
+                continue
+            if entry.stat().st_mtime >= cutoff:
+                continue
+        except OSError as exc:
+            log.warning(
+                "stale workspace stat failed: %s (%s)", entry, exc,
+            )
+            continue
+        try:
+            shutil.rmtree(entry)
+            purged += 1
+        except OSError as exc:
+            log.warning(
+                "stale workspace purge failed: %s (%s)", entry, exc,
+            )
+            continue
+    return purged
+
+
+__all__ = [
+    "router",
+    "purge_stale_uploads",
+    "purge_stale_workspaces",
+    "UPLOAD_DIR",
+    "EPHEMERAL_WORKSPACE_ROOT",
+]

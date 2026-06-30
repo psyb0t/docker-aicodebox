@@ -703,6 +703,75 @@ def test_stream_plus_schema_400_does_not_leak_ephemeral(
         )
 
 
+def test_purge_stale_workspaces_removes_orphans_older_than_ttl(
+    monkeypatch, tmp_path,
+):
+    """Orphans (dirs older than TTL) get removed. Fresh dirs survive.
+    The safety net for SIGKILL / crash / container restart cases the
+    per-request `finally` block can't cover."""
+    import os
+    from aicodebox.modes.api import oai as oai_mod
+
+    root = tmp_path / "aicodebox-eph"
+    monkeypatch.setattr(oai_mod, "EPHEMERAL_WORKSPACE_ROOT", root)
+    monkeypatch.setattr(oai_mod, "EPHEMERAL_WORKSPACE_TTL_SECONDS", 3600)
+    root.mkdir()
+
+    # Two orphans + one fresh dir.
+    old1 = root / "abc"
+    old1.mkdir()
+    (old1 / "session.json").write_text("{}")
+    old2 = root / "def"
+    old2.mkdir()
+    fresh = root / "live"
+    fresh.mkdir()
+
+    now = 1_000_000.0
+    old_mtime = now - 7200  # 2h old, past 1h TTL
+    fresh_mtime = now - 60  # 1m old, fresh
+
+    os.utime(old1, (old_mtime, old_mtime))
+    os.utime(old2, (old_mtime, old_mtime))
+    os.utime(fresh, (fresh_mtime, fresh_mtime))
+
+    purged = oai_mod.purge_stale_workspaces(now=now)
+    assert purged == 2
+    assert not old1.exists()
+    assert not old2.exists()
+    assert fresh.exists()
+
+
+def test_purge_stale_workspaces_handles_missing_root(monkeypatch, tmp_path):
+    """If the root dir doesn't exist yet (no schema requests ever
+    fired), purge is a no-op — must not crash."""
+    from aicodebox.modes.api import oai as oai_mod
+    monkeypatch.setattr(
+        oai_mod, "EPHEMERAL_WORKSPACE_ROOT", tmp_path / "never-created",
+    )
+    assert oai_mod.purge_stale_workspaces() == 0
+
+
+def test_purge_stale_workspaces_ignores_files(monkeypatch, tmp_path):
+    """Non-directory entries (someone dropped a file in the root) are
+    skipped — purge only touches the per-request subdirs it owns."""
+    import os
+    from aicodebox.modes.api import oai as oai_mod
+
+    root = tmp_path / "aicodebox-eph"
+    monkeypatch.setattr(oai_mod, "EPHEMERAL_WORKSPACE_ROOT", root)
+    monkeypatch.setattr(oai_mod, "EPHEMERAL_WORKSPACE_TTL_SECONDS", 3600)
+    root.mkdir()
+
+    stray_file = root / "stray.txt"
+    stray_file.write_text("not ours")
+    now = 1_000_000.0
+    old = now - 7200
+    os.utime(stray_file, (old, old))
+
+    assert oai_mod.purge_stale_workspaces(now=now) == 0
+    assert stray_file.exists()
+
+
 def test_ephemeral_cleanup_refuses_path_outside_root(monkeypatch, tmp_path):
     """Safety: _cleanup_ephemeral_workspace must refuse to rmtree anything
     outside EPHEMERAL_WORKSPACE_ROOT (defense in depth — even if the
