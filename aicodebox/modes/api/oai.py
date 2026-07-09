@@ -747,6 +747,18 @@ async def chat_completions(
                     f"agent exited with code {result.exit_code}: "
                     f"{result.raw_stderr[:200]}",
                 )
+            if result.provider_error:
+                log.warning(
+                    "oai chat (schema): provider error=%s",
+                    result.provider_error[:200],
+                )
+                return (
+                    result.text or "",
+                    result.usage or {},
+                    result.attempts,
+                    400,
+                    result.provider_error,
+                )
             if parse_error is not None:
                 log.warning(
                     "oai chat (schema): %d retries exhausted, error=%s",
@@ -782,6 +794,21 @@ async def chat_completions(
                 "oai chat: success text_len=%d usage=%s",
                 len(result.text or ""), result.usage or None,
             )
+
+        # Provider errors (e.g. GLM-4.7's 1301 content-safety rejection)
+        # should be surfaced as proper HTTP errors, not empty text that
+        # becomes nil downstream. The provider_error field carries the
+        # upstream error detail; we map it to an OAI-style error response.
+        if result.provider_error:
+            log.warning(
+                "oai chat: provider error=%s",
+                result.provider_error[:200],
+            )
+            # Return 400 for upstream provider errors (content safety,
+            # rate limits, auth failures, etc.). The error_detail carries
+            # the raw error message from the provider.
+            return "", result.usage or {}, None, 400, result.provider_error
+
         return result.text or "", result.usage or {}, None, None, None
 
     try:

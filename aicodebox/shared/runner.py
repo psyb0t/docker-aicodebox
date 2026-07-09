@@ -270,7 +270,12 @@ def run_with_json_retry(
     }]
 
     retries = 0
-    while parse_error and result.exit_code == 0 and retries < max_retries:
+    while (
+        parse_error
+        and result.exit_code == 0
+        and not result.provider_error
+        and retries < max_retries
+    ):
         retries += 1
         log.info(
             "schema retry: re-prompting %d/%d mode=%s (error: %s)",
@@ -298,6 +303,19 @@ def run_with_json_retry(
                 "schema retry: attempt %d crashed (exit=%d, stderr=%r) "
                 "— aborting retry loop",
                 retries, result.exit_code, result.raw_stderr[:200],
+            )
+            attempts.append({
+                "index": retries,
+                "usage": dict(result.usage) if result.usage else None,
+                "exitCode": result.exit_code,
+                "parseError": None,
+            })
+            break
+        if result.provider_error:
+            log.warning(
+                "schema retry: attempt %d hit provider error (%s) "
+                "— aborting retry loop, replaying the prompt won't help",
+                retries, result.provider_error[:200],
             )
             attempts.append({
                 "index": retries,

@@ -55,6 +55,7 @@ class RunResult:
     session_id: str = ""
     parsed: Any = None
     parse_error: str | None = None
+    provider_error: str | None = None
     usage: dict[str, Any] | None = None
     # Set by ``run_with_json_retry`` when at least one attempt ran. Each
     # entry: {"index": int, "usage": dict | None, "exit_code": int,

@@ -242,6 +242,50 @@ def test_schema_agent_crash_returns_500(client, monkeypatch):
     assert "connection refused" in detail
 
 
+def test_schema_provider_error_returns_400_not_422(client, monkeypatch):
+    """Provider rejects the request (e.g. content-safety filter) — the
+    agent exits 0 with empty text, so parse_json_response would normally
+    fail and this would look like a 422 schema failure. provider_error
+    must take priority: 400 with the provider's message, no retries."""
+    schema = {"type": "object", "required": ["n"]}
+    calls = _patch_runner_sequence(monkeypatch, [RunResult(
+        text="", raw_stdout="", raw_stderr="", exit_code=0,
+        provider_error="[1301] content policy violation",
+    )] * 5)
+
+    resp = client.post(
+        "/openai/v1/chat/completions",
+        json={
+            "model": "m1",
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+        headers={"x-aicodebox-json-schema": json.dumps(schema)},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "[1301] content policy violation"
+    # no retries — replaying the same prompt into the same filter is
+    # pointless, so only the initial attempt should have run
+    assert calls["n"] == 1
+
+
+def test_plain_provider_error_returns_400(client, monkeypatch):
+    """Same provider-error signal on the non-schema chat path."""
+    _patch_runner_sequence(monkeypatch, [RunResult(
+        text="", raw_stdout="", raw_stderr="", exit_code=0,
+        provider_error="[1301] content policy violation",
+    )])
+
+    resp = client.post(
+        "/openai/v1/chat/completions",
+        json={
+            "model": "m1",
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "[1301] content policy violation"
+
+
 # ── stream + schema is rejected ─────────────────────────────────────────────
 
 

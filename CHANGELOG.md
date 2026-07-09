@@ -4,6 +4,56 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking REST changes (called
 out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.11.0 — 2026-07-09
+
+Surface upstream provider errors (content-safety rejections, rate limits,
+auth failures) as proper HTTP error responses instead of a `200` with
+empty `text`.
+
+### The problem
+
+An adapter can reach a state where the underlying model provider itself
+rejected the request — e.g. a `400` with a content-safety error code
+from the provider — while the agent process still exits `0` (it did
+run, it just got an error turn back from the model). Previously
+`RunResult` had no field to carry that distinction, so `chat_completions`
+returned `text=""` with a `200` and no indication anything went wrong.
+Downstream OAI-compatible clients treat an empty string as a valid
+(if useless) completion, so the failure was invisible until something
+further down the chain choked on the empty content.
+
+### The fix
+
+**Breaking.** `RunResult` gains a `provider_error: str | None` field.
+Adapters that already detect an upstream provider error (surfaced by
+the underlying agent CLI as a per-turn error, e.g. an `errorMessage` on
+an assistant turn) can now populate it instead of silently discarding
+the detail.
+
+`chat_completions` (`/openai/v1/chat/completions`) checks
+`result.provider_error` in both the schema-mode and plain-text code
+paths, ahead of the existing exit-code / parse-error checks. When set,
+the endpoint returns HTTP `400` with the provider's error message as
+the detail, instead of a `200` with empty `text`. This applies whether
+or not `response_format`/JSON-schema mode is in use.
+
+`run_with_json_retry` also checks `provider_error` on every attempt and
+stops re-prompting the moment it appears — a provider rejection means
+the request itself was rejected, not that the JSON was malformed, so
+retrying the same prompt against the same filter wastes the retry
+budget for nothing.
+
+Adapters that never set `provider_error` (the field defaults to `None`)
+see no behavior change — this is opt-in per adapter.
+
+### Tests
+
+- `tests/test_oai_schema.py::test_schema_provider_error_returns_400_not_422`
+  (NEW) — a `RunResult` with `provider_error` set returns `400` with
+  the provider's message on the first attempt, with no retries fired.
+- `tests/test_oai_schema.py::test_plain_provider_error_returns_400`
+  (NEW) — same signal on the non-schema chat path.
+
 ## v0.10.1 — 2026-06-28
 
 Add the periodic safety-net purge that v0.10.0 forgot. Without it,
