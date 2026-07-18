@@ -10,7 +10,7 @@ import logging
 import os
 import subprocess
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Callable
 
 from aicodebox.adapters import (
     ProcHook,
@@ -196,6 +196,7 @@ def run_with_json_retry(
     proc_hook: ProcHook = None,
     max_retries: int = JSON_RETRY_MAX,
     continue_session_on_retry: bool = False,
+    early_accept: Callable[[str], bool] | None = None,
 ) -> tuple[RunResult, Any, str | None, int]:
     """Run a schema-validated spec with up to ``max_retries`` re-prompts on
     parse / validation failure. Returns
@@ -246,12 +247,21 @@ def run_with_json_retry(
     accumulated_usage: dict[str, Any] = {}
     _accumulate_usage(accumulated_usage, result.usage)
 
+    # ``early_accept`` lets a caller declare that some non-schema outputs are
+    # legitimate and must NOT be retried — e.g. in combined tools+schema mode
+    # a tool-call turn is a valid answer whose shape isn't the schema. When it
+    # fires, we skip schema validation and leave parse_error None so the loop
+    # doesn't re-prompt.
+    def _accepted_early(text: str) -> bool:
+        return early_accept is not None and early_accept(text or "")
+
     parsed = result.parsed
     parse_error = result.parse_error
     if parsed is None and parse_error is None and result.exit_code == 0:
-        parsed, parse_error = parse_json_response(
-            result.text or "", spec.json_schema,
-        )
+        if not _accepted_early(result.text or ""):
+            parsed, parse_error = parse_json_response(
+                result.text or "", spec.json_schema,
+            )
 
     log.debug(
         "schema retry: initial attempt exit=%d parse_error=%s usage_keys=%s",
@@ -327,9 +337,10 @@ def run_with_json_retry(
         parsed = result.parsed
         parse_error = result.parse_error
         if parsed is None and parse_error is None:
-            parsed, parse_error = parse_json_response(
-                result.text or "", spec.json_schema,
-            )
+            if not _accepted_early(result.text or ""):
+                parsed, parse_error = parse_json_response(
+                    result.text or "", spec.json_schema,
+                )
         log.debug(
             "schema retry: attempt %d exit=%d parse_error=%s "
             "usage_keys=%s",

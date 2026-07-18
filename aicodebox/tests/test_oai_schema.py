@@ -607,7 +607,7 @@ def test_schema_allocates_ephemeral_workspace_and_uses_continuation(
     real_run_with = oai_mod.run_with_json_retry
 
     def wrapped(spec, proc_hook=None, max_retries=3,
-                continue_session_on_retry=False):
+                continue_session_on_retry=False, early_accept=None):
         captured["continue_flag"] = continue_session_on_retry
         captured["workspace"] = spec.workspace
         return real_run_with(
@@ -615,6 +615,7 @@ def test_schema_allocates_ephemeral_workspace_and_uses_continuation(
             proc_hook=proc_hook,
             max_retries=max_retries,
             continue_session_on_retry=continue_session_on_retry,
+            early_accept=early_accept,
         )
 
     monkeypatch.setattr(oai_mod, "run_with_json_retry", wrapped)
@@ -680,7 +681,7 @@ def test_schema_with_caller_workspace_does_not_allocate_ephemeral(
     real_run_with = oai_mod.run_with_json_retry
 
     def wrapped(spec, proc_hook=None, max_retries=3,
-                continue_session_on_retry=False):
+                continue_session_on_retry=False, early_accept=None):
         captured["continue_flag"] = continue_session_on_retry
         captured["workspace"] = spec.workspace
         return real_run_with(
@@ -688,6 +689,7 @@ def test_schema_with_caller_workspace_does_not_allocate_ephemeral(
             proc_hook=proc_hook,
             max_retries=max_retries,
             continue_session_on_retry=continue_session_on_retry,
+            early_accept=early_accept,
         )
 
     monkeypatch.setattr(oai_mod, "run_with_json_retry", wrapped)

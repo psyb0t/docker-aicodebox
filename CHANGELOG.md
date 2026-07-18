@@ -4,6 +4,46 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking REST changes (called
 out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.13.0 — 2026-07-18
+
+Let `tools` and `response_format` compose in one request — an agentic
+tool-calling flow can now end in a **schema-validated structured JSON**
+reply. v0.12.0 rejected the combination with a 400; that was too strict.
+
+### What changed
+
+`tools` + `response_format` (or `x-aicodebox-json-schema`) together is now
+allowed. They describe **different turn types**, exactly like OpenAI:
+
+- A **tool-call turn** → `tool_calls` / `finish_reason:"tool_calls"`, and is
+  **not** schema-validated (calling a tool isn't the final answer).
+- The **final answer turn** (model stops calling tools) → validated against
+  the schema with the same up-to-3-retry self-correction as pure schema
+  mode, returned as canonical JSON / `finish_reason:"stop"`. Exhausted
+  retries → **422**; agent crash → **500**; per-attempt usage under
+  `aicodebox_attempts`.
+
+The tools directive now carries the final-answer schema, so the model is
+told both exits coherently: emit `tool_calls` to call a tool, otherwise emit
+JSON matching the schema.
+
+### Under the hood
+
+`shared/runner.py:run_with_json_retry` gains an optional `early_accept`
+callback. In combined mode the OAI handler passes a tool-call detector so a
+tool-call turn short-circuits the retry loop instead of being (wrongly)
+re-prompted as a schema-validation failure.
+
+### Errors
+
+- `tools` + `stream:true` still → **400** (streaming tool-call deltas remain
+  a planned follow-up; set `stream=false`).
+
+### Migration
+
+None — additive and more permissive. The v0.12.0 `400` on
+`tools` + `response_format` is removed; that pairing now works.
+
 ## v0.12.0 — 2026-07-18
 
 Support **OpenAI-style client-executed tool calling** on

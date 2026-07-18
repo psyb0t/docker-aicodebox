@@ -377,22 +377,89 @@ def test_handler_empty_tools_is_plain_chat(client, monkeypatch):
     assert "tool_calls" not in (calls["specs"][0].system_prompt or "")
 
 
-def test_handler_tools_plus_schema_400(client, monkeypatch):
-    _patch_run(monkeypatch, "unused")
+# ── combined tools + schema (agentic flow ending in structured JSON) ─────────
+
+_ANSWER_SCHEMA = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "answer",
+        "schema": {
+            "type": "object",
+            "properties": {"answer": {"type": "string"}},
+            "required": ["answer"],
+        },
+    },
+}
+
+
+def test_combined_tool_turn_is_not_schema_validated(client, monkeypatch):
+    """tools + response_format together: a tool-call turn is returned as
+    tool_calls / finish_reason 'tool_calls' and is NOT checked against the
+    final-answer schema (it isn't the final answer)."""
+    calls = _patch_run(
+        monkeypatch,
+        '{"tool_calls": [{"name": "get_weather", '
+        '"arguments": {"city": "SF"}}]}',
+    )
+    resp = client.post(
+        "/openai/v1/chat/completions",
+        json={
+            "model": "m1",
+            "messages": [{"role": "user", "content": "weather in SF?"}],
+            "tools": [_WEATHER_TOOL],
+            "response_format": _ANSWER_SCHEMA,
+        },
+    )
+    assert resp.status_code == 200
+    choice = resp.json()["choices"][0]
+    assert choice["finish_reason"] == "tool_calls"
+    assert choice["message"]["content"] is None
+    assert choice["message"]["tool_calls"][0]["function"]["name"] == \
+        "get_weather"
+    # the final-answer schema instruction was injected alongside the tools
+    sp = calls["specs"][0].system_prompt or ""
+    assert "FINAL answer" in sp
+    assert '"answer"' in sp
+
+
+def test_combined_final_answer_is_schema_validated(client, monkeypatch):
+    """The FINAL answer turn (no tool call) is schema-validated and returned
+    as canonical JSON with finish_reason 'stop'."""
+    _patch_run(monkeypatch, '{"answer": "it is sunny and 70F"}')
     resp = client.post(
         "/openai/v1/chat/completions",
         json={
             "model": "m1",
             "messages": [{"role": "user", "content": "hi"}],
             "tools": [_WEATHER_TOOL],
-            "response_format": {
-                "type": "json_schema",
-                "json_schema": {"name": "x", "schema": {"type": "object"}},
-            },
+            "response_format": _ANSWER_SCHEMA,
         },
     )
-    assert resp.status_code == 400
-    assert "incompatible" in resp.json()["detail"]
+    assert resp.status_code == 200
+    choice = resp.json()["choices"][0]
+    assert choice["finish_reason"] == "stop"
+    assert json.loads(choice["message"]["content"]) == {
+        "answer": "it is sunny and 70F",
+    }
+    # schema retry helper ran → per-attempt breakdown surfaced
+    assert "aicodebox_attempts" in resp.json()
+
+
+def test_combined_final_answer_schema_invalid_422(client, monkeypatch):
+    """A final-answer turn that doesn't satisfy the schema exhausts retries
+    and returns 422 (same as pure schema mode)."""
+    _patch_run(monkeypatch, '{"wrong_field": "nope"}')
+    resp = client.post(
+        "/openai/v1/chat/completions",
+        json={
+            "model": "m1",
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [_WEATHER_TOOL],
+            "response_format": _ANSWER_SCHEMA,
+        },
+    )
+    assert resp.status_code == 422
+    assert "validation failed" in resp.json()["detail"]
 
 
 def test_handler_tools_plus_stream_400(client, monkeypatch):

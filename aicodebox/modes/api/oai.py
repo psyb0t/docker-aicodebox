@@ -570,12 +570,29 @@ def _normalize_tool_choice(tool_choice: Any) -> Any:
     return "auto"
 
 
-def _tools_directive(tools: list[dict[str, Any]], choice: Any) -> str:
+def _tools_directive(
+    tools: list[dict[str, Any]],
+    choice: Any,
+    final_schema: dict[str, Any] | None = None,
+) -> str:
     """Build the system-prompt injection that turns the agent into a
     caller-executed function-calling model.
 
     ``tools`` is the OpenAI ``tools`` array; ``choice`` is the normalized
-    ``tool_choice`` from ``_normalize_tool_choice``."""
+    ``tool_choice`` from ``_normalize_tool_choice``. ``final_schema`` (combined
+    tools+schema mode) constrains the FINAL answer turn — when set, the "no
+    tool needed" branch tells the model to emit schema-matching JSON instead of
+    plain text, so the two exits (tool_calls vs schema JSON) don't contradict."""
+    if final_schema is None:
+        no_tool_clause = (
+            "If you do NOT need a tool, answer the user normally in plain text."
+        )
+    else:
+        no_tool_clause = (
+            "If you are NOT calling a tool this turn, that means you are giving "
+            "your FINAL answer — respond with ONLY a JSON object matching the "
+            "schema shown at the end of this message, and nothing else."
+        )
     lines = [
         "You have access to the following tools. These tools are executed "
         "by the CALLER, not by you. When you decide to use one or more, you "
@@ -585,8 +602,7 @@ def _tools_directive(tools: list[dict[str, Any]], choice: Any) -> str:
         '{"tool_calls": [{"name": "<tool_name>", "arguments": {<json args>}}]}',
         "Request multiple tools by adding more entries to the array. After "
         "you emit tool_calls, STOP — the caller runs the tools and sends the "
-        "results back, then you continue. If you do NOT need a tool, answer "
-        "the user normally in plain text.",
+        "results back, then you continue. " + no_tool_clause,
         "",
         "Available tools:",
     ]
@@ -608,6 +624,11 @@ def _tools_directive(tools: list[dict[str, Any]], choice: Any) -> str:
         lines.append(
             f"\nYou MUST call the tool named {choice['name']!r} this turn.",
         )
+    if final_schema is not None:
+        lines.append(
+            "\nFINAL-answer schema (only when you are NOT calling a tool):",
+        )
+        lines.append(json.dumps(final_schema))
     return "\n".join(lines)
 
 
@@ -731,17 +752,10 @@ async def chat_completions(
     tool_mode = has_tools and tool_choice != "none"
 
     if tool_mode:
+        # Flatten the tool-aware transcript now; the tools directive is built
+        # a bit later, once the (optional) final-answer schema is known, so a
+        # combined tools+schema request produces one coherent directive.
         prompt, system_prompt = _messages_to_tool_prompt(req.messages)
-        directive = _tools_directive(req.tools, tool_choice)
-        system_prompt = "\n\n".join(
-            p for p in (system_prompt, directive) if p
-        )
-        log.info(
-            "oai chat: tool-calling mode tools=%d tool_choice=%s "
-            "internal_tools_override=%s",
-            len(req.tools), tool_choice,
-            x_no_tools if x_no_tools is not None else "(default off)",
-        )
     else:
         prompt, system_prompt = await _messages_to_prompt(req.messages)
     if not prompt:
@@ -789,15 +803,27 @@ async def chat_completions(
         )
     json_schema = body_schema if body_schema is not None else header_schema
 
-    # tools and schema are two different response contracts (tool_calls vs
-    # validated JSON) — can't honor both in one response.
-    if tool_mode and json_schema is not None:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "tools are incompatible with response_format / "
-                "x-aicodebox-json-schema — pick one response contract"
-            ),
+    # Combined tools + schema: both are allowed in one request because they
+    # describe DIFFERENT turn types, exactly like OpenAI. A tool-call turn is
+    # tool_calls / finish_reason "tool_calls" (never schema-checked); the
+    # FINAL answer turn (model stops calling tools) is what the schema
+    # constrains. Now that json_schema is known, build the tools directive —
+    # in combined mode it also carries the final-answer schema so the two
+    # exits (tool_calls vs schema JSON) are stated coherently.
+    combined_mode = tool_mode and json_schema is not None
+    if tool_mode:
+        directive = _tools_directive(
+            req.tools, tool_choice,
+            final_schema=json_schema if combined_mode else None,
+        )
+        system_prompt = "\n\n".join(
+            p for p in (system_prompt, directive) if p
+        )
+        log.info(
+            "oai chat: tool-calling mode tools=%d tool_choice=%s combined=%s "
+            "internal_tools_override=%s",
+            len(req.tools), tool_choice, combined_mode,
+            x_no_tools if x_no_tools is not None else "(default off)",
         )
 
     # Streaming tool-calls (incremental tool_call argument deltas) aren't in
@@ -924,6 +950,11 @@ async def chat_completions(
         # caller sees structurally clean output regardless of how the LLM
         # originally formatted it.
         if json_schema is not None:
+            # Combined tools+schema: a tool-call turn is a valid answer that
+            # is NOT the schema-constrained final answer, so the retry helper
+            # must accept it as-is instead of re-prompting it as a schema
+            # failure. early_accept does exactly that (None outside combined
+            # mode → normal schema validation on every turn).
             # Cheap-retry mode is safe IFF the workspace is isolated to
             # this request — that's exactly what the ephemeral workspace
             # gives us. With a caller-provided workspace we can't know
@@ -933,6 +964,10 @@ async def chat_completions(
                 spec,
                 proc_hook=hook,
                 continue_session_on_retry=ephemeral_workspace is not None,
+                early_accept=(
+                    (lambda text: _parse_tool_calls(text) is not None)
+                    if combined_mode else None
+                ),
             )
             if result.exit_code != 0:
                 log.warning(
@@ -958,6 +993,22 @@ async def chat_completions(
                     result.attempts,
                     400,
                     result.provider_error,
+                )
+            # Combined mode: the model called a tool instead of giving its
+            # final answer. Return the raw tool-call text so the envelope
+            # emits tool_calls / finish_reason "tool_calls" (no schema check
+            # — this isn't the final answer).
+            if combined_mode and _parse_tool_calls(result.text or ""):
+                log.info(
+                    "oai chat (tools+schema): tool-call turn attempts=%d",
+                    len(result.attempts) if result.attempts else 1,
+                )
+                return (
+                    result.text or "",
+                    result.usage or {},
+                    result.attempts,
+                    None,
+                    None,
                 )
             if parse_error is not None:
                 log.warning(
