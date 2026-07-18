@@ -38,7 +38,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict
 
-from aicodebox.adapters import get_adapter
+from aicodebox.adapters import get_adapter, parse_json_response
 from aicodebox.modes.api.auth import check_bearer
 from aicodebox.modes.api.runs import REGISTRY as RUNS
 from aicodebox.modes.api.workspace import (
@@ -80,7 +80,16 @@ router = APIRouter(dependencies=[Depends(check_bearer)])
 class _OAIMessage(BaseModel):
     model_config = ConfigDict(extra="ignore")
     role: str
-    content: Union[str, list[Any]]
+    # content is null on assistant messages that only carry tool_calls,
+    # so it must be optional to parse a tool-calling conversation history.
+    content: Union[str, list[Any], None] = None
+    # Present on assistant messages that requested tool calls (echoed back
+    # by the client in the next round of the loop).
+    tool_calls: list[dict[str, Any]] | None = None
+    # role="tool" result messages: correlates the result to the assistant
+    # tool_call it answers + the function name that produced it.
+    tool_call_id: str | None = None
+    name: str | None = None
 
 
 class _OAIRequest(BaseModel):
@@ -528,6 +537,152 @@ def _parse_list_header(value: str | None, name: str) -> list[str] | None:
     return [s.strip() for s in stripped.split(",") if s.strip()]
 
 
+# ── OpenAI client-executed tool calling ──────────────────────────────────────
+#
+# The agent (pi/claude-code/…) runs its OWN tools internally. OpenAI-style tool
+# calling is the opposite: the CLIENT executes the tools. We bridge the two by
+# using the agent as a pure function-calling LLM — inject the client's tool
+# schemas + an "emit {"tool_calls":[...]} and STOP" protocol into the system
+# prompt, then parse the agent's output back into OpenAI tool_calls. Stateless:
+# the client resends the full history each round-trip (standard OpenAI loop), so
+# no session pinning is needed. Whether the harness uses its own tools while
+# thinking is irrelevant — only the response shape matters.
+
+
+def _normalize_tool_choice(tool_choice: Any) -> Any:
+    """Collapse the many ``tool_choice`` shapes into a small set of values.
+
+    Returns ``"auto"`` / ``"none"`` / ``"required"`` for the string/type
+    forms, or ``{"name": <fn>}`` for a forced-specific-function choice.
+    Anything unrecognized defaults to ``"auto"`` (OpenAI's default)."""
+    if tool_choice is None:
+        return "auto"
+    if isinstance(tool_choice, str):
+        return tool_choice if tool_choice in ("auto", "none", "required") else "auto"
+    if isinstance(tool_choice, dict):
+        fn = tool_choice.get("function") or {}
+        name = fn.get("name")
+        if name:
+            return {"name": str(name)}
+        kind = tool_choice.get("type")
+        if kind in ("auto", "none", "required"):
+            return kind
+    return "auto"
+
+
+def _tools_directive(tools: list[dict[str, Any]], choice: Any) -> str:
+    """Build the system-prompt injection that turns the agent into a
+    caller-executed function-calling model.
+
+    ``tools`` is the OpenAI ``tools`` array; ``choice`` is the normalized
+    ``tool_choice`` from ``_normalize_tool_choice``."""
+    lines = [
+        "You have access to the following tools. These tools are executed "
+        "by the CALLER, not by you. When you decide to use one or more, you "
+        "MUST respond with ONLY a JSON object of this exact shape and "
+        "nothing else — no prose, no markdown code fences, no commentary "
+        "before or after:",
+        '{"tool_calls": [{"name": "<tool_name>", "arguments": {<json args>}}]}',
+        "Request multiple tools by adding more entries to the array. After "
+        "you emit tool_calls, STOP — the caller runs the tools and sends the "
+        "results back, then you continue. If you do NOT need a tool, answer "
+        "the user normally in plain text.",
+        "",
+        "Available tools:",
+    ]
+    for tool in tools:
+        fn = tool.get("function") or {}
+        name = fn.get("name", "")
+        if not name:
+            continue
+        lines.append(f"\n- name: {name}")
+        desc = fn.get("description")
+        if desc:
+            lines.append(f"  description: {desc}")
+        params = fn.get("parameters", {})
+        lines.append(f"  parameters (JSON Schema): {json.dumps(params)}")
+
+    if choice == "required":
+        lines.append("\nYou MUST call at least one tool this turn.")
+    elif isinstance(choice, dict):
+        lines.append(
+            f"\nYou MUST call the tool named {choice['name']!r} this turn.",
+        )
+    return "\n".join(lines)
+
+
+def _messages_to_tool_prompt(
+    messages: list[_OAIMessage],
+) -> tuple[str, str | None]:
+    """Flatten a tool-calling conversation into a tagged transcript.
+
+    Unlike ``_messages_to_prompt``, this renders assistant ``tool_calls``
+    and ``role="tool"`` result messages so the agent sees the full loop
+    history. Returns ``(prompt, system_prompt)``; the caller appends the
+    tools directive to the system prompt."""
+    system_parts: list[str] = []
+    lines = ["Continue this conversation. Respond to the last message."]
+    for msg in messages:
+        role = msg.role
+        if role == "system":
+            system_parts.append(_content_text_only(msg.content or ""))
+            continue
+        if role == "assistant" and msg.tool_calls:
+            rendered = []
+            for call in msg.tool_calls:
+                fn = call.get("function") or {}
+                rendered.append(
+                    f"{fn.get('name', '')}({fn.get('arguments', '')})",
+                )
+            lines.append(
+                "\n[ASSISTANT called tools]\n" + "\n".join(rendered),
+            )
+            continue
+        if role == "tool":
+            name = msg.name or ""
+            tcid = msg.tool_call_id or ""
+            result = _content_text_only(msg.content or "")
+            lines.append(f"\n[TOOL RESULT {name} ({tcid})]\n{result}")
+            continue
+        text = _content_text_only(msg.content or "").strip()
+        if text:
+            lines.append(f"\n[{role.upper()}]\n{text}")
+
+    system_prompt = "\n\n".join(p for p in system_parts if p) or None
+    return "\n".join(lines), system_prompt
+
+
+def _parse_tool_calls(text: str) -> list[dict[str, Any]] | None:
+    """Extract OpenAI ``tool_calls`` from the agent's textual output.
+
+    Reuses the tolerant JSON extractor so a ``{"tool_calls": [...]}`` block
+    is found even when the model wraps it in prose or code fences. Returns
+    the OpenAI-shaped list (``arguments`` serialized to a JSON string, as
+    the OpenAI wire format requires) or ``None`` when no valid tool call is
+    present (the caller then treats the output as a normal text answer)."""
+    value, err = parse_json_response(text)
+    if err or not isinstance(value, dict):
+        return None
+    raw = value.get("tool_calls")
+    if not isinstance(raw, list) or not raw:
+        return None
+    calls: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name")
+        if not name:
+            continue
+        args = item.get("arguments", {})
+        args_str = args if isinstance(args, str) else json.dumps(args)
+        calls.append({
+            "id": f"call_{uuid.uuid4().hex[:24]}",
+            "type": "function",
+            "function": {"name": str(name), "arguments": args_str},
+        })
+    return calls or None
+
+
 @router.post("/openai/v1/chat/completions")
 async def chat_completions(
     req: _OAIRequest,
@@ -567,13 +722,28 @@ async def chat_completions(
         x_resume is not None,
         x_no_tools is not None,
     )
-    if req.tools or req.tool_choice:
-        raise HTTPException(
-            status_code=400,
-            detail="tools/tool_choice not supported — agent runs its own tools",
-        )
+    # Tool-calling mode: engage when the caller supplies non-empty ``tools``
+    # AND tool_choice isn't "none". In that mode we flatten the tool-aware
+    # transcript and inject the emit-and-stop protocol; otherwise it's plain
+    # chat with the existing flattener.
+    has_tools = isinstance(req.tools, list) and len(req.tools) > 0
+    tool_choice = _normalize_tool_choice(req.tool_choice)
+    tool_mode = has_tools and tool_choice != "none"
 
-    prompt, system_prompt = await _messages_to_prompt(req.messages)
+    if tool_mode:
+        prompt, system_prompt = _messages_to_tool_prompt(req.messages)
+        directive = _tools_directive(req.tools, tool_choice)
+        system_prompt = "\n\n".join(
+            p for p in (system_prompt, directive) if p
+        )
+        log.info(
+            "oai chat: tool-calling mode tools=%d tool_choice=%s "
+            "internal_tools_override=%s",
+            len(req.tools), tool_choice,
+            x_no_tools if x_no_tools is not None else "(default off)",
+        )
+    else:
+        prompt, system_prompt = await _messages_to_prompt(req.messages)
     if not prompt:
         raise HTTPException(status_code=400, detail="no user message provided")
 
@@ -595,7 +765,17 @@ async def chat_completions(
     tools_allowlist = _parse_list_header(
         x_tools_allowlist, "x-aicodebox-tools-allowlist",
     )
-    no_tools = _parse_bool_header(x_no_tools)
+    # In tool mode the harness acts as a pure function-calling model for the
+    # CLIENT's tools, so its OWN internal tools (bash / file edits) default
+    # OFF — otherwise it may autonomously fulfil the request itself and never
+    # emit the client tool call. An explicit x-aicodebox-no-tools header
+    # still overrides (send "0"/"false" to re-enable the hybrid). Non-tool
+    # requests keep the prior default (internal tools on unless the header
+    # disables them).
+    if tool_mode and x_no_tools is None:
+        no_tools = True
+    else:
+        no_tools = _parse_bool_header(x_no_tools)
 
     # Body's response_format is the OpenAI standard — it wins over the
     # x-aicodebox-json-schema header (the header was our pre-standard
@@ -608,6 +788,26 @@ async def chat_completions(
             "x-aicodebox-json-schema header set — body wins (OAI standard)",
         )
     json_schema = body_schema if body_schema is not None else header_schema
+
+    # tools and schema are two different response contracts (tool_calls vs
+    # validated JSON) — can't honor both in one response.
+    if tool_mode and json_schema is not None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "tools are incompatible with response_format / "
+                "x-aicodebox-json-schema — pick one response contract"
+            ),
+        )
+
+    # Streaming tool-calls (incremental tool_call argument deltas) aren't in
+    # this cut; a tool call must be parsed from the complete response. Reject
+    # like stream+schema so the client can retry with stream=false.
+    if tool_mode and req.stream:
+        raise HTTPException(
+            status_code=400,
+            detail="tools with stream=true not supported; set stream=false",
+        )
 
     # Streaming + schema is incompatible: schema validation requires the
     # complete response. We can't validate while still emitting deltas, and
@@ -828,6 +1028,24 @@ async def chat_completions(
     in_tok = _usage_tokens(usage, "input_tokens", "inputTokens", "input")
     out_tok = _usage_tokens(usage, "output_tokens", "outputTokens", "output")
 
+    # In tool mode, parse the agent's output for a tool-call block. If found,
+    # the message carries OpenAI ``tool_calls`` + finish_reason "tool_calls"
+    # (content null) so the client runs the tools; otherwise it's a normal
+    # text answer.
+    tool_calls = _parse_tool_calls(text) if tool_mode else None
+    if tool_calls:
+        message: dict[str, Any] = {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": tool_calls,
+        }
+        finish_reason = "tool_calls"
+        log.info("oai chat: tool-calling mode emitted %d tool_call(s)",
+                 len(tool_calls))
+    else:
+        message = {"role": "assistant", "content": text or ""}
+        finish_reason = "stop"
+
     envelope: dict[str, Any] = {
         "id": cid,
         "object": "chat.completion",
@@ -836,8 +1054,8 @@ async def chat_completions(
         "choices": [
             {
                 "index": 0,
-                "message": {"role": "assistant", "content": text or ""},
-                "finish_reason": "stop",
+                "message": message,
+                "finish_reason": finish_reason,
             },
         ],
         "usage": {

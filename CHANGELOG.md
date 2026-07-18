@@ -4,6 +4,63 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking REST changes (called
 out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.12.0 — 2026-07-18
+
+Support **OpenAI-style client-executed tool calling** on
+`POST /openai/v1/chat/completions`. A client that defines `tools` (an
+OpenAI/MCP client, an agentic IDE assistant, etc.) can now use an
+aicodebox machine as a plain function-calling model: it responds with
+`tool_calls` when it wants a tool, the client runs the tool in its own
+environment, sends the result back, and the loop continues.
+
+### What's new
+
+- `tools` / `tool_choice` in the request body are now honored instead of
+  rejected with a `400`.
+- When `tools` is a non-empty array and `tool_choice` isn't `"none"`, the
+  route injects the tool schemas plus an "emit `{"tool_calls":[...]}` and
+  stop" protocol into the agent's system prompt, flattens the full
+  message history (including prior assistant `tool_calls` and
+  `role:"tool"` results), runs the agent, and parses its output back into
+  OpenAI `tool_calls`.
+- Response shape matches OpenAI exactly:
+  - tool needed → `{message:{role:"assistant", content:null,
+    tool_calls:[{id, type:"function", function:{name, arguments}}]},
+    finish_reason:"tool_calls"}` (`arguments` is a JSON **string**, per
+    the OpenAI wire format).
+  - no tool needed → normal `content` + `finish_reason:"stop"`.
+- **Stateless**, exactly like OpenAI: the client resends the whole
+  history each round-trip, so there's no server-side session to pin.
+- `tool_choice` honored: `"auto"` (default), `"none"` (plain chat, no
+  tool injection), `"required"` (must call a tool), and a specific
+  `{type:"function", function:{name}}` (must call that tool).
+- Tolerant parsing: the agent's `{"tool_calls":...}` block is extracted
+  even when wrapped in prose or ``` fences (reuses the same
+  `parse_json_response` extractor as schema mode).
+
+In tool mode the harness's **own** internal tools (bash, file edits)
+default **off** — the machine acts as a pure function-calling model for
+the client's tools, so it doesn't autonomously fulfil the request itself
+and skip emitting the tool call. Send `x-aicodebox-no-tools: 0` (or
+`false`) to re-enable the hybrid (internal tools + client tools together).
+Non-tool requests are unchanged (internal tools on unless the header
+disables them).
+
+### Errors
+
+- `tools` + `response_format`/`x-aicodebox-json-schema` → **400** (two
+  different response contracts; pick one).
+- `tools` + `stream:true` → **400** (streaming tool-call deltas aren't in
+  this release; set `stream=false`). Streaming tool-calls are a planned
+  follow-up.
+
+### Migration
+
+None — additive. Requests without `tools` behave exactly as before. The
+previous blanket `400` on `tools`/`tool_choice` is gone; clients that
+relied on that rejection as a signal should stop sending `tools` if they
+don't want tool calling.
+
 ## v0.11.0 — 2026-07-09
 
 Surface upstream provider errors (content-safety rejections, rate limits,
