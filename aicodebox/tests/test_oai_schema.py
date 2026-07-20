@@ -289,8 +289,18 @@ def test_plain_provider_error_returns_400(client, monkeypatch):
 # ── stream + schema is rejected ─────────────────────────────────────────────
 
 
-def test_stream_with_schema_returns_400(client):
-    schema = {"type": "object"}
+def test_stream_with_schema_buffers_to_sse(client, monkeypatch):
+    """stream=true + schema doesn't 400 — the schema-validated answer is
+    buffered and replayed as a single-shot SSE stream."""
+    schema = {
+        "type": "object",
+        "properties": {"a": {"type": "string"}},
+        "required": ["a"],
+    }
+    _patch_runner_sequence(monkeypatch, [RunResult(
+        text='{"a": "hi"}', raw_stdout='{"a": "hi"}', raw_stderr="",
+        exit_code=0, usage={"input_tokens": 5, "output_tokens": 3},
+    )])
     resp = client.post(
         "/openai/v1/chat/completions",
         json={
@@ -300,8 +310,14 @@ def test_stream_with_schema_returns_400(client):
         },
         headers={"x-aicodebox-json-schema": json.dumps(schema)},
     )
-    assert resp.status_code == 400
-    assert "stream=true" in resp.json()["detail"]
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/event-stream")
+    body = resp.text
+    assert "chat.completion.chunk" in body
+    assert '"content"' in body  # schema JSON emitted as a content delta
+    assert "hi" in body
+    assert '"finish_reason": "stop"' in body
+    assert "data: [DONE]" in body
 
 
 # ── other RunSpec headers plumb through ─────────────────────────────────────
@@ -505,9 +521,13 @@ def test_response_format_json_schema_missing_inner_returns_400(client):
     assert "schema" in resp.json()["detail"]
 
 
-def test_response_format_stream_incompatible_returns_400(client):
-    """stream=true + response_format=json_schema → 400 (same as
-    stream=true + x-aicodebox-json-schema header)."""
+def test_response_format_stream_buffers_to_sse(client, monkeypatch):
+    """stream=true + response_format=json_schema buffers to a single-shot
+    SSE stream (same graceful path as the header form)."""
+    _patch_runner_sequence(monkeypatch, [RunResult(
+        text='{"ok": true}', raw_stdout='{"ok": true}', raw_stderr="",
+        exit_code=0, usage={"input_tokens": 5, "output_tokens": 3},
+    )])
     resp = client.post(
         "/openai/v1/chat/completions",
         json={
@@ -520,8 +540,12 @@ def test_response_format_stream_incompatible_returns_400(client):
             },
         },
     )
-    assert resp.status_code == 400
-    assert "stream=true" in resp.json()["detail"]
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/event-stream")
+    body = resp.text
+    assert "chat.completion.chunk" in body
+    assert '"finish_reason": "stop"' in body
+    assert "data: [DONE]" in body
 
 
 def test_malformed_timeout_header_returns_400(client):
@@ -720,14 +744,19 @@ def test_schema_with_caller_workspace_does_not_allocate_ephemeral(
     assert not (tmp_path / "should-not-exist").exists()
 
 
-def test_stream_plus_schema_400_does_not_leak_ephemeral(
+def test_stream_plus_schema_buffered_cleans_up_ephemeral(
     client, monkeypatch, tmp_path,
 ):
-    """The stream+schema 400 check happens BEFORE ephemeral allocation —
-    so a rejected request doesn't leave a /tmp/aicodebox/<uuid>/ behind."""
+    """schema + stream=true (no caller workspace) buffers to SSE and still
+    cleans up the ephemeral workspace afterwards — no /tmp/aicodebox/<uuid>/
+    left behind."""
     from aicodebox.modes.api import oai as oai_mod
     eph_root = tmp_path / "aicodebox-eph"
     monkeypatch.setattr(oai_mod, "EPHEMERAL_WORKSPACE_ROOT", eph_root)
+    _patch_runner_sequence(monkeypatch, [RunResult(
+        text='{"ok": true}', raw_stdout='{"ok": true}', raw_stderr="",
+        exit_code=0, usage={"input_tokens": 5, "output_tokens": 3},
+    )])
 
     resp = client.post(
         "/openai/v1/chat/completions",
@@ -741,11 +770,13 @@ def test_stream_plus_schema_400_does_not_leak_ephemeral(
             },
         },
     )
-    assert resp.status_code == 400
-    # No subdirs created — the 400 fired before _allocate_ephemeral_workspace
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/event-stream")
+    # reading resp.text drains the stream → the finally-block cleanup ran
+    assert "data: [DONE]" in resp.text
     if eph_root.exists():
         assert not any(eph_root.iterdir()), (
-            "stream+schema 400 must not allocate an ephemeral workspace"
+            "buffered stream must clean up its ephemeral workspace"
         )
 
 

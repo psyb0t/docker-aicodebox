@@ -462,16 +462,28 @@ def test_combined_final_answer_schema_invalid_422(client, monkeypatch):
     assert "validation failed" in resp.json()["detail"]
 
 
-def test_handler_tools_plus_stream_400(client, monkeypatch):
-    _patch_run(monkeypatch, "unused")
+def test_handler_tools_plus_stream_buffers_to_sse(client, monkeypatch):
+    """tools + stream=true doesn't 400 — it buffers the tool-call answer and
+    replays it as a single-shot SSE stream (valid stream, not incremental)."""
+    _patch_run(
+        monkeypatch,
+        '{"tool_calls": [{"name": "get_weather", '
+        '"arguments": {"city": "SF"}}]}',
+    )
     resp = client.post(
         "/openai/v1/chat/completions",
         json={
             "model": "m1",
-            "messages": [{"role": "user", "content": "hi"}],
+            "messages": [{"role": "user", "content": "weather?"}],
             "tools": [_WEATHER_TOOL],
             "stream": True,
         },
     )
-    assert resp.status_code == 400
-    assert "stream=false" in resp.json()["detail"]
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/event-stream")
+    body = resp.text
+    assert "chat.completion.chunk" in body
+    assert "tool_calls" in body
+    assert '"index": 0' in body  # streaming tool_calls carry an index
+    assert '"finish_reason": "tool_calls"' in body
+    assert "data: [DONE]" in body

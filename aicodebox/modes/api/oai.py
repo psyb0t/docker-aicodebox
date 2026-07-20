@@ -826,29 +826,13 @@ async def chat_completions(
             x_no_tools if x_no_tools is not None else "(default off)",
         )
 
-    # Streaming tool-calls (incremental tool_call argument deltas) aren't in
-    # this cut; a tool call must be parsed from the complete response. Reject
-    # like stream+schema so the client can retry with stream=false.
-    if tool_mode and req.stream:
-        raise HTTPException(
-            status_code=400,
-            detail="tools with stream=true not supported; set stream=false",
-        )
-
-    # Streaming + schema is incompatible: schema validation requires the
-    # complete response. We can't validate while still emitting deltas, and
-    # mid-stream parse failure has no clean way to recover via the SSE wire.
-    # Check this BEFORE any workspace allocation so we don't leak an
-    # ephemeral dir on the 400 path.
-    if req.stream and json_schema is not None:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "schema-validated responses (x-aicodebox-json-schema header "
-                "or response_format=json_schema / json_object) are "
-                "incompatible with stream=true; set stream=false"
-            ),
-        )
+    # Tool / schema modes can't stream token-by-token — a tool call or a
+    # schema-validated answer only exists once the full response is in hand.
+    # But a client that set stream=true still wants a stream, not a 400: we
+    # BUFFER (compute the whole answer non-streamed) and replay it as a
+    # single-shot SSE stream, so the client's streaming parser is satisfied.
+    # Only plain chat streams incrementally.
+    buffered_stream = req.stream and (tool_mode or json_schema is not None)
 
     # Workspace strategy:
     #   - Caller provided `x-aicodebox-workspace` → use as-is (their dir,
@@ -878,7 +862,9 @@ async def chat_completions(
     # assistant turn can be schema-validated (mirrors /run's _derive_output_format).
     schema_output_format = "json-verbose" if json_schema is not None else None
 
-    if req.stream:
+    # Plain chat + stream=true → real incremental SSE. Tool/schema streams are
+    # handled by buffering below (buffered_stream), not here.
+    if req.stream and not buffered_stream:
         return await _stream_response(
             prompt=prompt,
             system_prompt=system_prompt,
@@ -1123,10 +1109,56 @@ async def chat_completions(
     # OAI-only clients ignore unknown fields cleanly.
     if attempts:
         envelope["aicodebox_attempts"] = attempts
+
+    # tool/schema modes computed the full answer above; if the caller asked
+    # for a stream, replay that finished envelope as a single-shot SSE stream
+    # so their streaming client gets a valid stream instead of a 400.
+    if buffered_stream:
+        return StreamingResponse(
+            _envelope_as_sse(envelope, cid, created),
+            media_type="text/event-stream",
+        )
     return envelope
 
 
 # ── streaming (one SSE chunk per adapter StreamEvent) ────────────────────────
+
+
+def _envelope_as_sse(
+    envelope: dict[str, Any], cid: str, created: int,
+) -> AsyncIterator[str]:
+    """Replay a finished chat.completion envelope as an SSE chunk stream.
+
+    Used for buffered streaming (tool/schema modes): the whole answer is
+    already computed, so we emit it as an opening role chunk, one content
+    or tool_calls delta, then the finish + [DONE] terminators. A client
+    reconstructing tool_calls by ``index`` gets the (single, complete)
+    call correctly — the streaming wire just isn't token-incremental."""
+    model = envelope.get("model", "")
+    choice = envelope["choices"][0]
+    message = choice["message"]
+    finish = choice.get("finish_reason") or "stop"
+
+    async def gen() -> AsyncIterator[str]:
+        yield _sse_chunk(cid, created, model, {"role": "assistant"})
+        tool_calls = message.get("tool_calls")
+        if tool_calls:
+            # Streaming tool_calls carry an ``index``; the non-stream shape
+            # doesn't, so add it here.
+            delta_calls = [
+                {"index": i, **tc} for i, tc in enumerate(tool_calls)
+            ]
+            yield _sse_chunk(
+                cid, created, model, {"tool_calls": delta_calls},
+            )
+        elif message.get("content"):
+            yield _sse_chunk(
+                cid, created, model, {"content": message["content"]},
+            )
+        yield _sse_chunk(cid, created, model, {}, finish)
+        yield "data: [DONE]\n\n"
+
+    return gen()
 
 
 def _sse_chunk(

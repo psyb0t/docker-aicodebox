@@ -4,6 +4,46 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking REST changes (called
 out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.14.0 — 2026-07-20
+
+Serve `stream:true` for tool-calling and schema modes as **buffered SSE**
+instead of returning a 400. A streaming client now gets a valid stream,
+not an error.
+
+### What changed
+
+A tool call or a schema-validated answer only exists once the full response
+is computed, so it can't stream token-by-token. Previously `stream:true`
+with `tools` or `response_format` returned **400**. Now the route computes
+the whole answer non-streamed and replays it as a single-shot SSE stream
+(`text/event-stream`):
+
+- an opening `{"role":"assistant"}` chunk,
+- one `content` delta (schema/text) or one `tool_calls` delta — streaming
+  `tool_calls` carry the required `index` so clients reconstruct them
+  correctly,
+- the finish chunk (`finish_reason:"stop"` or `"tool_calls"`),
+- `data: [DONE]`.
+
+The client's streaming SDK is satisfied — it just isn't token-incremental.
+**Plain chat still streams incrementally** as before; only tool/schema
+modes buffer. Genuine failures still surface as HTTP errors (schema
+validation exhausted → 422, agent crash → 500) rather than a stream.
+
+### Under the hood
+
+`modes/api/oai.py` gains `_envelope_as_sse`, which replays a finished
+`chat.completion` envelope as SSE chunks. The incremental streaming path
+(`_stream_response`) is now gated to plain chat only. For schema mode the
+per-request ephemeral workspace is still cleaned up (synchronously, before
+the stream is handed back) — no leak.
+
+### Migration
+
+None — additive and more permissive. The v0.13.0 `400` on
+`tools` / `response_format` + `stream:true` is replaced by buffered SSE.
+Clients that special-cased that 400 can drop the workaround.
+
 ## v0.13.0 — 2026-07-18
 
 Let `tools` and `response_format` compose in one request — an agentic
