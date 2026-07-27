@@ -1,5 +1,6 @@
 # docker-aicodebox
 
+[![CI](https://github.com/psyb0t/docker-aicodebox/actions/workflows/pipeline.yml/badge.svg?branch=main)](https://github.com/psyb0t/docker-aicodebox/actions/workflows/pipeline.yml)
 [![version](https://raw.githubusercontent.com/psyb0t/docker-aicodebox/badges/version.svg)](https://github.com/psyb0t/docker-aicodebox/releases)
 [![license](https://raw.githubusercontent.com/psyb0t/docker-aicodebox/badges/license.svg)](LICENSE)
 [![Docker Pulls](https://img.shields.io/docker/pulls/psyb0t/aicodebox?style=flat-square)](https://hub.docker.com/r/psyb0t/aicodebox)
