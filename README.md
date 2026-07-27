@@ -1,8 +1,8 @@
 # docker-aicodebox
 
+[![version](https://raw.githubusercontent.com/psyb0t/docker-aicodebox/badges/version.svg)](https://github.com/psyb0t/docker-aicodebox/releases)
+[![license](https://raw.githubusercontent.com/psyb0t/docker-aicodebox/badges/license.svg)](LICENSE)
 [![Docker Pulls](https://img.shields.io/docker/pulls/psyb0t/aicodebox?style=flat-square)](https://hub.docker.com/r/psyb0t/aicodebox)
-[![License: WTFPL](https://img.shields.io/badge/License-WTFPL-brightgreen.svg?style=flat-square)](http://www.wtfpl.net/)
-[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg?style=flat-square)](https://www.python.org/downloads/)
 
 The agent-agnostic foundation for putting any terminal-shaped AI coding agent on the network. Pick your poison — `claude-code`, `pi`, `opencode`, `hermes`, whatever vibes — bolt on a 20-line adapter, and out the other end you get an **HTTP API**, an **OpenAI-compatible chat completions endpoint**, an **MCP server**, a **Telegram bot**, and a **cron scheduler** that fires the agent on whatever schedule you can dream up. One container. Same surfaces. Swap the brain.
 
