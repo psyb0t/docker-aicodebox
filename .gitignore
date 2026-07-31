@@ -23,3 +23,6 @@ dist/
 .venv/
 venv/
 .telemetry
+
+# Cloned upstream sources read during research — scratch, never shipped
+.research_files/
