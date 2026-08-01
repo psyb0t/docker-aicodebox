@@ -4,6 +4,16 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking REST changes (called
 out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.14.3 — 2026-08-01
+
+Infrastructure only — the image and its behaviour are unchanged.
+
+- Every branch and tag push is now mirrored to GitLab and Codeberg.
+- The default branch and tags are archived to the Wayback Machine and Software
+  Heritage, on push and monthly.
+- Issues opened on the mirrors are pulled back into GitHub every six hours.
+- Ignores a local `.research_files/` scratch dir.
+
 ## v0.14.2 — 2026-07-27
 
 - Added a GitHub Actions CI status badge to the README.
