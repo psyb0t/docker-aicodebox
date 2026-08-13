@@ -4,6 +4,20 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking REST changes (called
 out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.14.5 — 2026-08-13
+
+Re-releases v0.14.4 with a consistent lockfile. No code change.
+
+- v0.14.4 bumped `pyproject.toml` to `0.14.4` but did not stage `uv.lock`, so
+  the lockfile's editable `aicodebox` entry was left at `0.14.0`. The image
+  build was unaffected (`uv export --frozen` resolves regardless), but the
+  version was inconsistent. This release moves both `pyproject.toml` and
+  `uv.lock` to `0.14.5` so the tag is internally consistent. Pin downstream
+  images to this tag rather than `v0.14.4`.
+- The restart-loop fix from v0.14.4 (agent spawned with `start_new_session=True`
+  in both paths of `aicodebox/shared/runner.py`) is unchanged and carried
+  forward.
+
 ## v0.14.4 — 2026-08-13
 
 Fixes the API-mode container restart-looping while an agent request runs.
