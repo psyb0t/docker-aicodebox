@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
+import subprocess
 import sys
 
 import pytest
 
 from aicodebox.adapters import base as adapter_base
 from aicodebox.adapters.base import RunRequest, StreamEvent
-from aicodebox.shared.runner import RunSpec, run_stream
+from aicodebox.shared.runner import RunSpec, run, run_stream
 
 
 # ── default parse_stream_event ───────────────────────────────────────────────
@@ -145,3 +147,38 @@ async def test_run_stream_handles_missing_binary(monkeypatch, tmp_path):
     assert "binary not found" in errors[0].text
     assert events[-1].type == "stop"
     assert events[-1].data == {"reason": "error"}
+
+
+# ── session isolation — the agent must not share PID 1's process group ───────
+# Regression guard: without start_new_session the agent shares the launching
+# process's group; in api mode the server is PID 1, so a signal the agent sends
+# to that group shuts uvicorn down (exit 0) and the container restart-loops.
+
+
+def test_run_spawns_agent_in_new_session(echo_adapter, tmp_path, monkeypatch):
+    captured: dict = {}
+    real_popen = subprocess.Popen
+
+    def spy(*args, **kwargs):
+        captured.update(kwargs)
+        return real_popen(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", spy)
+    run(RunSpec(prompt="", workspace=str(tmp_path)))
+    assert captured.get("start_new_session") is True
+
+
+@pytest.mark.asyncio
+async def test_run_stream_spawns_agent_in_new_session(
+    echo_adapter, tmp_path, monkeypatch,
+):
+    captured: dict = {}
+    real_exec = asyncio.create_subprocess_exec
+
+    async def spy(*args, **kwargs):
+        captured.update(kwargs)
+        return await real_exec(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spy)
+    await _collect(RunSpec(prompt="", workspace=str(tmp_path)))
+    assert captured.get("start_new_session") is True

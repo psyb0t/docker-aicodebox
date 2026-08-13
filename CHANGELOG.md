@@ -4,6 +4,25 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking REST changes (called
 out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.14.4 — 2026-08-13
+
+Fixes the API-mode container restart-looping while an agent request runs.
+
+- The agent subprocess is now spawned with its own session and process group
+  (`start_new_session=True`) in both the synchronous `run()` path and the
+  streaming `run_stream()` path in `aicodebox/shared/runner.py`. Previously it
+  inherited the launcher's process group; in `api` mode the server is PID 1, so
+  a `SIGTERM`/`SIGINT` the agent CLI (or a tool it spawned) delivered to that
+  shared group also reached uvicorn. uvicorn shut down cleanly — exit 0, and
+  because `uvicorn.run(..., log_config=None)` suppresses its own shutdown lines
+  the exit was silent — and the container's restart policy relaunched it. The
+  loop tracked request activity rather than any crash or OOM.
+- Added regression tests asserting both spawn paths pass `start_new_session`;
+  they fail if the flag is dropped from either site.
+- Bumped `pyproject.toml` to `0.14.4`. It had been left at `0.14.0` across the
+  v0.14.1–v0.14.3 tags, so the Makefile — which derives the image tag from that
+  field — would have labelled builds `v0.14.0`. This release realigns the two.
+
 ## v0.14.3 — 2026-08-01
 
 Infrastructure only — the image and its behaviour are unchanged.

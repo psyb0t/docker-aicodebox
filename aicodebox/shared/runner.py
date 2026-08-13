@@ -406,6 +406,12 @@ def _run_popen(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            # Give the agent its own session/process group. Without this it
+            # shares the server's group; when the agent CLI (or a tool it
+            # spawns) signals that group on exit, SIGTERM/SIGINT also reaches
+            # the API server. In api mode the server is PID 1, so uvicorn shuts
+            # down cleanly (exit 0) and the container restart-loops.
+            start_new_session=True,
         )
     except FileNotFoundError as exc:
         return RunResult(
@@ -474,6 +480,9 @@ async def run_stream(spec: RunSpec) -> AsyncIterator[StreamEvent]:
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            # Own session/process group — see the sync spawn in _run_popen.
+            # A group signal from the agent must not reach the API server.
+            start_new_session=True,
         )
     except FileNotFoundError as exc:
         yield StreamEvent(
