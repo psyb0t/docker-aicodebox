@@ -44,6 +44,10 @@ class RunRequest:
     thinking: str | None = None
     tools_allowlist: list[str] | None = None
     no_tools: bool = False
+    # ``full`` asks the adapter to retain its complete native event stream for
+    # the API response. It is deliberately independent from ``json_schema``:
+    # structured final output and execution telemetry are separate concerns.
+    event_mode: str = "none"  # none | full
 
 
 @dataclass
@@ -65,6 +69,11 @@ class RunResult:
     # "retry 2/3 cost 120 input tokens" use this; callers that just
     # want the total use ``usage``.
     attempts: list[dict[str, Any]] | None = None
+    # Raw provider events for this subprocess attempt. They stay native so no
+    # tool arguments, thinking blocks, or provider-specific metadata are lost.
+    events: list[dict[str, Any]] = field(default_factory=list)
+    # Populated by the schema retry helper. Index matches the retry attempt.
+    event_attempts: list[list[dict[str, Any]]] | None = None
 
 
 @dataclass
@@ -293,6 +302,10 @@ class AgentAdapter:
             raise ValueError(
                 f"output_format={req.output_format!r} invalid; "
                 "choose text | json | json-verbose"
+            )
+        if req.event_mode not in ("none", "full"):
+            raise ValueError(
+                f"event_mode={req.event_mode!r} invalid; choose none | full",
             )
 
     def build_argv(self, req: RunRequest) -> list[str]:

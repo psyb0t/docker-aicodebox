@@ -44,6 +44,13 @@ class _EchoAdapter(adapter_base.AgentAdapter):
         script = "printf 'line one\\nline two\\nline three\\n'"
         return [self.binary, "-c", script]
 
+    def parse_events(self, stdout, req):
+        del req
+        return [
+            {"type": "native", "line": line}
+            for line in stdout.splitlines()
+        ]
+
 
 class _FailAdapter(adapter_base.AgentAdapter):
     """Spawns /bin/sh which writes to stderr then exits 3."""
@@ -113,6 +120,18 @@ async def test_run_stream_surfaces_nonzero_exit_as_error(fail_adapter, tmp_path)
 
     assert events[-1].type == "stop"
     assert events[-1].data == {"reason": "error"}
+
+
+def test_run_retains_native_events_only_in_full_mode(echo_adapter, tmp_path):
+    full = run(RunSpec(
+        prompt="", workspace=str(tmp_path), event_mode="full",
+    ))
+    none = run(RunSpec(prompt="", workspace=str(tmp_path)))
+
+    assert [event["line"] for event in full.events] == [
+        "line one", "line two", "line three",
+    ]
+    assert none.events == []
 
 
 @pytest.mark.asyncio

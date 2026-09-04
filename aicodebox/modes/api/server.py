@@ -15,7 +15,7 @@ import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Path, Query
 from pydantic import BaseModel, Field
@@ -35,7 +35,6 @@ from aicodebox.shared.runner import (
     RunSpec,
     run as run_agent,
     run_with_json_retry,
-    spec_to_request,
     validate_spec,
 )
 
@@ -118,15 +117,17 @@ class RunBody(BaseModel):
     append_system_prompt: str | None = Field(
         default=None, alias="appendSystemPrompt",
     )
-    # When set, the agent is invoked in JSON mode (under the hood: the
-    # adapter's ``json-verbose`` output_format, so the event stream is
-    # available too) and the response carries the full diagnostic surface:
-    # ``text`` + ``json`` (decoded + schema-validated) + ``events``
-    # (tool calls / thinking / per-turn metadata) + ``sessionId`` + ``usage``.
-    # On parse / validation failure the wrapper retries up to 3 times,
-    # surfacing ``parseError`` + ``jsonRetries`` in place of ``json`` if all
-    # attempts fail. When unset the response is lean: just ``text``.
     json_schema: dict | None = Field(default=None, alias="jsonSchema")
+    # ``full`` returns every native CLI event in a provider-neutral envelope.
+    # ``auto`` preserves the prior schema-driven behaviour for old clients.
+    event_mode: Literal["auto", "none", "full"] = Field(
+        default="auto", alias="eventMode",
+    )
+    # Kept for callers of the original claudebox API. New callers should use
+    # eventMode because JSON schema and event retention are independent.
+    output_format: Literal["text", "json", "json-verbose"] | None = Field(
+        default=None, alias="outputFormat",
+    )
     no_continue: bool = Field(default=False, alias="noContinue")
     resume: str | None = None
     async_: bool = Field(default=False, alias="async")
@@ -147,17 +148,19 @@ class RunBody(BaseModel):
 
 
 def _derive_output_format(body: RunBody) -> str:
-    """Pick the adapter's ``output_format`` for this request.
-
-    Only one bit drives the choice: did the caller pass a ``jsonSchema``?
-
-      jsonSchema set → ``json-verbose`` (full event stream, schema-validated
-                       final assistant text on top — the response carries
-                       text + json + events + sessionId + usage)
-      no jsonSchema  → ``text``         (lean prose, no events)"""
+    """Pick final-output handling without coupling it to event retention."""
     if body.json_schema is not None:
-        return "json-verbose"
+        return "json"
     return "text"
+
+
+def _derive_event_mode(body: RunBody) -> str:
+    """Resolve the canonical event dial while preserving legacy clients."""
+    if body.event_mode != "auto":
+        return body.event_mode
+    if body.output_format == "json-verbose" or body.json_schema is not None:
+        return "full"
+    return "none"
 
 
 def _build_spec(body: RunBody) -> tuple[RunSpec, str]:
@@ -166,6 +169,7 @@ def _build_spec(body: RunBody) -> tuple[RunSpec, str]:
     except WorkspaceError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     output_format = _derive_output_format(body)
+    event_mode = _derive_event_mode(body)
     try:
         spec = RunSpec(
             prompt=body.prompt,
@@ -182,6 +186,7 @@ def _build_spec(body: RunBody) -> tuple[RunSpec, str]:
             tools_allowlist=body.tools_allowlist,
             no_tools=body.no_tools,
             extra_args=list(body.extra_args or []),
+            event_mode=event_mode,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -190,6 +195,25 @@ def _build_spec(body: RunBody) -> tuple[RunSpec, str]:
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return spec, workspace_path
+
+
+def _event_envelopes(result: Any, backend: str) -> list[dict[str, Any]]:
+    """Wrap native events without discarding provider-specific payloads."""
+    event_attempts = result.event_attempts or [result.events]
+    envelopes: list[dict[str, Any]] = []
+    sequence = 0
+    for attempt, events in enumerate(event_attempts):
+        for event in events:
+            sequence += 1
+            event_type = event.get("type") if isinstance(event, dict) else None
+            envelopes.append({
+                "sequence": sequence,
+                "attempt": attempt,
+                "backend": backend,
+                "eventType": event_type or "unknown",
+                "event": event,
+            })
+    return envelopes
 
 
 def _invoke(
@@ -213,35 +237,19 @@ def _invoke(
         parse_error = None
         retries = 0
 
-    # ── payload shaping ─────────────────────────────────────────────────
-    # Two wire shapes, picked by jsonSchema:
-    #
-    #   no schema  → {exitCode, text}
-    #   schema set → {exitCode, text, events, sessionId, usage,
-    #                 json | (parseError + jsonRetries)}
-    #
-    # Schema mode is always-verbose: the caller gets the full diagnostic
-    # surface (events, sessionId, usage) alongside the validated json.
     payload: dict[str, Any] = {"exitCode": result.exit_code, "text": result.text}
 
-    if has_schema:
-        try:
-            events = get_adapter().parse_events(
-                result.raw_stdout or "", spec_to_request(spec),
-            )
-        except Exception:  # noqa: BLE001
-            log.exception("parse_events failed for run %s", run_id)
-            events = []
-        payload["events"] = events
+    if has_schema or spec.event_mode == "full":
         if result.session_id:
             payload["sessionId"] = result.session_id
         if result.usage:
             payload["usage"] = result.usage
+
+    if spec.event_mode == "full":
+        payload["events"] = _event_envelopes(result, get_adapter().name)
+
+    if has_schema:
         if result.attempts:
-            # Per-attempt usage + exit code + parse_error. The top-level
-            # ``usage`` field is the SUM across all attempts; this array
-            # gives the breakdown so callers can bill per-attempt or
-            # debug which retry failed which way.
             payload["attempts"] = result.attempts
         if parse_error:
             payload["parseError"] = parse_error
@@ -358,8 +366,8 @@ def main() -> int:
         log.error(
             "api: no models configured — set AICODEBOX_AVAILABLE_MODELS "
             "(comma-separated) or have the adapter declare available_models. "
-            "/v1/models has no usable fallback (the adapter name is not a "
-            "model name)."
+            "/openai/v1/models has no usable fallback "
+            "(the adapter name is not a model name)."
         )
         return 1
     try:

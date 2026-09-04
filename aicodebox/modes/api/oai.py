@@ -13,8 +13,8 @@ envelope. Supports:
   ``runner.run_stream`` and forwards each ``StreamEvent`` of type ``delta``
   as its own ``chat.completion.chunk``. Adapters that don't override
   ``parse_stream_event`` get the default line-per-delta behaviour.
-- reject ``tools`` / ``tool_choice`` / ``response_format=json_object`` with
-  400 so clients fall back to ``/run`` rather than silently losing capability
+- client-executed ``tools`` / ``tool_choice`` and standard ``response_format``
+  structured output, including a structured final response after tool calls
 """
 from __future__ import annotations
 

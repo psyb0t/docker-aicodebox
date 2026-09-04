@@ -1,0 +1,18 @@
+# gitleaks config for docker-aicodebox.
+#
+# Keep the default ruleset. Allow only shell expansions and clearly fake
+# documentation placeholders in secret positions. Never allow whole paths or
+# rule IDs, because a real token in an example must still fail the scan.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Shell interpolations and documentation placeholders, matched by value"
+regexTarget = "secret"
+regexes = [
+  '''^\$\{?[A-Za-z_][A-Za-z0-9_]*\}?$''',
+  '''^(your|my)-[a-z-]*(secret|token|key)[a-z-]*$''',
+  '''^(mcp|smoke|legacy|real|test|fake|example|dummy)-(token|secret|key)$''',
+  '''^(token|secret|auth|wrong|enforcement|mcpsecret|some-long-random-string)$''',
+]

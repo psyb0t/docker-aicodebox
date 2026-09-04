@@ -44,6 +44,7 @@ class RunSpec:
     thinking: str | None = None
     tools_allowlist: list[str] | None = None
     no_tools: bool = False
+    event_mode: str = "none"
     extra_args: list[str] = field(default_factory=list)
 
 
@@ -79,6 +80,7 @@ def spec_to_request(
         thinking=spec.thinking,
         tools_allowlist=spec.tools_allowlist,
         no_tools=spec.no_tools,
+        event_mode=spec.event_mode,
     )
 
 
@@ -246,6 +248,7 @@ def run_with_json_retry(
     result = run(spec, proc_hook=proc_hook)
     accumulated_usage: dict[str, Any] = {}
     _accumulate_usage(accumulated_usage, result.usage)
+    event_attempts: list[list[dict[str, Any]]] = [list(result.events)]
 
     # ``early_accept`` lets a caller declare that some non-schema outputs are
     # legitimate and must NOT be retried — e.g. in combined tools+schema mode
@@ -308,6 +311,7 @@ def run_with_json_retry(
         )
         result = run(retry_spec, proc_hook=proc_hook)
         _accumulate_usage(accumulated_usage, result.usage)
+        event_attempts.append(list(result.events))
         if result.exit_code != 0:
             log.warning(
                 "schema retry: attempt %d crashed (exit=%d, stderr=%r) "
@@ -362,6 +366,7 @@ def run_with_json_retry(
     if accumulated_usage:
         result.usage = accumulated_usage
     result.attempts = attempts
+    result.event_attempts = event_attempts
 
     if parse_error and result.exit_code == 0:
         outcome = "exhausted"
@@ -432,17 +437,29 @@ def _run_popen(
     except subprocess.TimeoutExpired:
         proc.kill()
         stdout, stderr = proc.communicate()
-        return RunResult(
-            text="",
-            raw_stdout=stdout or "",
-            raw_stderr=f"timeout after {req.timeout_seconds}s",
-            exit_code=124,
-        )
+        result = adapter.parse_output(stdout or "", req)
+        result.raw_stdout = stdout or ""
+        result.raw_stderr = f"timeout after {req.timeout_seconds}s"
+        result.exit_code = 124
+        _attach_events(result, adapter, req)
+        return result
     result = adapter.parse_output(stdout or "", req)
     result.raw_stdout = stdout or ""
     result.raw_stderr = stderr or ""
     result.exit_code = proc.returncode
+    _attach_events(result, adapter, req)
     return result
+
+
+def _attach_events(result: RunResult, adapter: Any, req: RunRequest) -> None:
+    """Best-effort retain native events only when the caller asked for them."""
+    if req.event_mode != "full":
+        return
+    try:
+        result.events = adapter.parse_events(result.raw_stdout, req)
+    except Exception:  # noqa: BLE001
+        log.exception("event parsing failed for adapter=%s", adapter.name)
+        result.events = []
 
 
 # ── async streaming ──────────────────────────────────────────────────────────

@@ -4,6 +4,20 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking REST changes (called
 out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.14.6 — 2026-09-04
+
+Adds independent native event retention to `POST /run`.
+
+- `eventMode` is now the event-retention control: `full` returns untouched
+  provider records in the stable `{sequence, attempt, backend, eventType,
+  event}` envelope, while `none` omits them. `auto` preserves the previous
+  schema and `json-verbose` compatibility behaviour.
+- Structured JSON, session metadata, usage, retry attempts, and raw output
+  remain independent from event retention. Schema retries retain records from
+  every attempt when events are enabled.
+- Corrects `/openai/v1/*` route references and the OpenAI adapter's capability
+  documentation. Adds unit coverage for the public event response contract.
+
 ## v0.14.5 — 2026-08-13
 
 Re-releases v0.14.4 with a consistent lockfile. No code change.

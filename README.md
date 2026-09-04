@@ -78,11 +78,10 @@ class MyAdapter(AgentAdapter):
     def parse_stream_event(self, line: str, req: RunRequest) -> StreamEvent | None:
         return StreamEvent(type="delta", text=line + "\n") if line else None
 
-    # Optional: post-hoc events surfaced in /run's ``events`` field when
-    # the caller passes ``jsonSchema`` (the schema mode is what triggers
-    # the full diagnostic surface). Runs once over completed stdout.
-    # Plain-text adapters return [] (the default) — schema mode will just
-    # not carry events for those adapters.
+    # Optional: native events surfaced in /run's ``events`` field when
+    # the caller sets ``eventMode`` to ``full``. Runs once over completed
+    # stdout. Preserve provider records without dropping fields. Plain-text
+    # adapters return [] (the default).
     def parse_events(self, stdout: str, req: RunRequest) -> list[dict]:
         return []
 ```
@@ -101,19 +100,32 @@ Modes are controlled by env vars. Set the flag, the entrypoint starts that mode.
 
 `AICODEBOX_API_MODE=1`. Boots a FastAPI server on `:8080` (override with `AICODEBOX_API_MODE_PORT`) with:
 
-> **Required:** `AICODEBOX_AVAILABLE_MODELS=<csv>` — `/v1/models` needs a real list, and there's no safe fallback (the adapter name isn't a model name). API mode refuses to boot without it. Pick the model ids your configured provider actually serves.
+> **Required:** `AICODEBOX_AVAILABLE_MODELS=<csv>` — `/openai/v1/models` needs a real list, and there's no safe fallback (the adapter name isn't a model name). API mode refuses to boot without it. Pick the model ids your configured provider actually serves.
 
-- `POST /run` — sync agent run. The response shape is driven by a single request flag — `jsonSchema`:
-  - **No `jsonSchema`** → `{runId, workspace, exitCode, text}`. Lean — just the assistant's prose.
-  - **`"jsonSchema": {...}`** → full diagnostic surface: `{runId, workspace, exitCode, text, json, events, sessionId, usage, attempts}`. The agent is invoked in json-verbose mode under the hood — its output is decoded, validated against your schema, and the parsed object is surfaced as `json`; `events` carries the adapter's structured event log (tool calls, thinking blocks, per-turn metadata); `sessionId` + `usage` come from the agent. `usage` is the **sum** of token counts across every retry attempt (provider bills per attempt; reporting only the last would lie); `attempts` is the per-attempt breakdown `[{index, usage, exitCode, parseError}, ...]` so callers can render "retry 2/3 cost X" or bill per attempt. On parse / schema-validation failure the wrapper re-prompts the agent up to 3 times with the prior bad output + the specific error; if all attempts still fail, `parseError` + `jsonRetries` replace `json` (everything else — `text`, `events`, `sessionId`, `usage`, `attempts` — still surfaces). One flag, two wire shapes. No `verbose` dial — schema = full surface, no schema = lean.
+- `POST /run` — sync agent run. `jsonSchema` and event collection are independent:
+  - **No `jsonSchema`, `eventMode: "none"`** returns `{runId, workspace, exitCode, text}`.
+  - **`"jsonSchema": {...}`** validates the final text and adds `json`, `sessionId`, `usage`, and `attempts`. Failed validation retries up to three times and returns `parseError` plus `jsonRetries` if every attempt fails.
+  - **`"eventMode": "full"`** adds the complete native agent event stream as `events`, including reasoning, tool lifecycle, usage, and provider metadata where the CLI exposes them. Each record has the stable envelope `{sequence, attempt, backend, eventType, event}`. `event` is the untouched provider record.
+  - **`"eventMode": "none"`** suppresses `events`, including for a schema request. **`"eventMode": "auto"`** is the default and keeps compatibility by enabling events for a schema request or `"outputFormat": "json-verbose"`.
 
-  Set `"includeRaw": true` on the request to also receive `stdout` + `stderr`. `stderr` is always included automatically when `exitCode != 0` so the failure has a diagnostic.
-- `POST /run` with `"async": true` or `"fireAndForget": true` — returns `{runId, status: "running"}` immediately
-- `GET /run/result?runId=<id>` — poll an async run (same payload shape as sync)
+  `"outputFormat": "text"` and `"outputFormat": "json"` remain accepted legacy inputs but do not change the `/run` response shape. New callers should select event retention with `eventMode`; only `json-verbose` has a compatibility effect while `eventMode` is `auto`.
+
+  `usage` is the sum across every schema retry. `attempts` is the per-attempt breakdown `[{index, usage, exitCode, parseError}]`. Set `includeRaw` to also receive `stdout` and `stderr`; `stderr` is always included when `exitCode != 0`.
+
+  ```json
+  {
+    "prompt": "Inspect the workspace and return a short report.",
+    "eventMode": "full",
+    "jsonSchema": {"type": "object"}
+  }
+  ```
+
+- `POST /run` with `"async": true` or `"fireAndForget": true` returns `{runId, workspace, status: "running", fireAndForget}` immediately
+- `GET /run/result?runId=<id>` polls an async run. A completed response includes the synchronous result fields plus `status`.
 - `DELETE /run/{id}` — kill an in-flight run
 - `GET|PUT|DELETE /files/{path}` — workspace file CRUD
-- `POST /v1/chat/completions` — OpenAI-compatible (streaming + non-streaming). Plug it into anything that speaks OpenAI. **Schema-validated JSON output**: stock OpenAI clients drive it via the standard `response_format` body field (`{"type":"json_object"}` for permissive, `{"type":"json_schema","json_schema":{"name":"...","schema":{...}}}` for structured outputs); the proprietary `x-aicodebox-json-schema` header is supported as a fallback. Body field wins if both are set. Schema mode runs up to 3 self-correction retries — success → canonical JSON in `message.content`, retries exhausted → **422**, agent process crash → **500** with exit code + stderr in `detail`, combined with `stream=true` → buffered SSE (see below). Additional RunSpec knobs via `x-aicodebox-*` headers: `workspace`, `continue`, `append-system-prompt`, `resume`, `extra-args`, `timeout-seconds`, `tools-allowlist`, `no-tools`. Malformed header values surface as 400 with the offending header name. When schema mode runs retries, `usage` is the **sum** across all attempts (input/output/total/cache fields all summed), and the envelope carries a vendor-extension `aicodebox_attempts: [{index, usage, exitCode, parseError}, ...]` so callers can see the per-attempt breakdown (OAI-only clients ignore the unknown field). **Cheap retries via session continuation**: schema requests that omit `x-aicodebox-workspace` get a per-request ephemeral workspace under `/tmp/aicodebox/<uuid>/` (cleaned up in `finally`); retries then run with `no_continue=False` and a minimal corrective prompt (error + directive + schema) instead of replaying the full original input, cutting per-retry input cost roughly 100x on large prompts. Callers that DO provide their own workspace fall back to fresh-session retries that re-state the original task — safe across any workspace, but more expensive. **Client-executed tool calling**: send the standard `tools` array (+ optional `tool_choice`) and the machine acts as a plain function-calling model — it responds with `tool_calls` + `finish_reason:"tool_calls"` when it wants a tool, your client runs the tool and sends the `role:"tool"` result back, and the loop continues (stateless, resend full history each round, exactly like OpenAI). `tool_choice` supports `auto`/`none`/`required`/`{type:"function",function:{name}}`. **`tools` + `response_format` compose** (agentic-then-structured): a tool-call turn returns `tool_calls`/`finish_reason:"tool_calls"` and is *not* schema-checked, while the model's final answer turn is validated against the schema (with retry) and returned as canonical JSON — so a multi-tool flow can end in a structured reply. **Streaming for tool/schema modes** (`stream=true` with `tools` or `response_format`) is served as **buffered SSE**: the full answer is computed, then replayed as a single-shot `text/event-stream` (opening role chunk → one `content`/`tool_calls` delta with the required `index` → finish chunk → `data: [DONE]`) — a valid stream, just not token-incremental. Plain chat still streams incrementally. In tool mode the harness's own internal tools default **off** (pure function-caller); send `x-aicodebox-no-tools: 0` to re-enable the hybrid (internal + client tools together).
-- `GET /v1/models` — model list from the adapter
+- `POST /openai/v1/chat/completions` — OpenAI-compatible (streaming + non-streaming). Plug it into anything that speaks OpenAI. **Schema-validated JSON output**: stock OpenAI clients drive it via the standard `response_format` body field (`{"type":"json_object"}` for permissive, `{"type":"json_schema","json_schema":{"name":"...","schema":{...}}}` for structured outputs); the proprietary `x-aicodebox-json-schema` header is supported as a fallback. Body field wins if both are set. Schema mode runs up to 3 self-correction retries — success → canonical JSON in `message.content`, retries exhausted → **422**, agent process crash → **500** with exit code + stderr in `detail`, combined with `stream=true` → buffered SSE (see below). Additional RunSpec knobs via `x-aicodebox-*` headers: `workspace`, `continue`, `append-system-prompt`, `resume`, `extra-args`, `timeout-seconds`, `tools-allowlist`, `no-tools`. Malformed header values surface as 400 with the offending header name. When schema mode runs retries, `usage` is the **sum** across all attempts (input/output/total/cache fields all summed), and the envelope carries a vendor-extension `aicodebox_attempts: [{index, usage, exitCode, parseError}, ...]` so callers can see the per-attempt breakdown (OAI-only clients ignore the unknown field). **Cheap retries via session continuation**: schema requests that omit `x-aicodebox-workspace` get a per-request ephemeral workspace under `/tmp/aicodebox/<uuid>/` (cleaned up in `finally`); retries then run with `no_continue=False` and a minimal corrective prompt (error + directive + schema) instead of replaying the full original input, cutting per-retry input cost roughly 100x on large prompts. Callers that DO provide their own workspace fall back to fresh-session retries that re-state the original task — safe across any workspace, but more expensive. **Client-executed tool calling**: send the standard `tools` array (+ optional `tool_choice`) and the machine acts as a plain function-calling model — it responds with `tool_calls` + `finish_reason:"tool_calls"` when it wants a tool, your client runs the tool and sends the `role:"tool"` result back, and the loop continues (stateless, resend full history each round, exactly like OpenAI). `tool_choice` supports `auto`/`none`/`required`/`{type:"function",function:{name}}`. **`tools` + `response_format` compose** (agentic-then-structured): a tool-call turn returns `tool_calls`/`finish_reason:"tool_calls"` and is *not* schema-checked, while the model's final answer turn is validated against the schema (with retry) and returned as canonical JSON — so a multi-tool flow can end in a structured reply. **Streaming for tool/schema modes** (`stream=true` with `tools` or `response_format`) is served as **buffered SSE**: the full answer is computed, then replayed as a single-shot `text/event-stream` (opening role chunk → one `content`/`tool_calls` delta with the required `index` → finish chunk → `data: [DONE]`) — a valid stream, just not token-incremental. Plain chat still streams incrementally. In tool mode the harness's own internal tools default **off** (pure function-caller); send `x-aicodebox-no-tools: 0` to re-enable the hybrid (internal + client tools together).
+- `GET /openai/v1/models` — model list from the adapter
 - `POST /mcp` — MCP server (mounted only when `AICODEBOX_MCP_MODE=1`; auth via `AICODEBOX_MCP_MODE_TOKEN`, separate from the API bearer)
 
 Bearer auth for the API surface: `AICODEBOX_API_MODE_TOKEN=<one-token>`. Single token, no rotation list. Empty = no auth.
@@ -187,7 +199,7 @@ Env var convention: `<MODE>_MODE` is the on/off flag for that mode; `<MODE>_MODE
 | `AICODEBOX_AGENT_BINARY` | *required* | Name of the agent's CLI binary (for `which` checks, version reports) |
 | `AICODEBOX_WORKSPACE` | `/workspace` | Root dir for all per-chat / per-job workspaces |
 | `AICODEBOX_CONTAINER_NAME` | `aicodebox` | Display name in `/status`, logs, and per-container state files |
-| `AICODEBOX_AVAILABLE_MODELS` | — | **Required for API mode.** CSV list returned by `/v1/models` and shown in the telegram `/model` picker. API mode refuses to boot without it; telegram `/model` picker degrades to a "set this env var" reply. |
+| `AICODEBOX_AVAILABLE_MODELS` | — | **Required for API mode.** CSV list returned by `/openai/v1/models` and shown in the telegram `/model` picker. API mode refuses to boot without it; telegram `/model` picker degrades to a "set this env var" reply. |
 | `AICODEBOX_AVAILABLE_EFFORTS` | adapter list | Override the effort/`--thinking` list exposed via `/effort` (comma-separated) |
 
 ### Mode flags
