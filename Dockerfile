@@ -1,6 +1,6 @@
 # aicodebox-base — agent-agnostic foundation image.
 #
-# Provides: Ubuntu 24.04, Node.js LTS, Python 3.12, Docker CE, `aicode` user
+# Provides: Ubuntu 24.04, Node.js LTS, Python 3.14, Docker CE, `aicode` user
 # with passwordless sudo, the `aicodebox` python package (adapters + modes),
 # and a stock entrypoint that handles UID/GID rematch, docker socket GID,
 # auth-env loading, and mode dispatch (api / telegram / cron).
@@ -10,13 +10,46 @@
 #   - install your agent binary
 #   - uv pip install --system your adapter package
 #   - ENV AICODEBOX_ADAPTER=yourpkg.adapter:YourAdapter
+FROM ubuntu:24.04@sha256:c4a8d5503dfb2a3eb8ab5f807da5bc69a85730fb49b5cfca2330194ebcc41c7b AS python-builder
+
+ARG PYTHON_VERSION=3.14.7
+ARG PYTHON_SHA256=3b48dac8fb59f62eaa67ac83c1eb12bda1b7a08406dd286e252c11a66be27f81
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    ca-certificates \
+    curl \
+    libbz2-dev \
+    libffi-dev \
+    libgdbm-dev \
+    liblzma-dev \
+    libncursesw5-dev \
+    libreadline-dev \
+    libsqlite3-dev \
+    libssl-dev \
+    uuid-dev \
+    xz-utils \
+    zlib1g-dev \
+    && curl -fsSL "https://www.python.org/ftp/python/${PYTHON_VERSION}/Python-${PYTHON_VERSION}.tar.xz" \
+        -o /tmp/python.tar.xz \
+    && echo "${PYTHON_SHA256}  /tmp/python.tar.xz" | sha256sum -c - \
+    && mkdir -p /tmp/python-src \
+    && tar -xJf /tmp/python.tar.xz --strip-components=1 -C /tmp/python-src \
+    && cd /tmp/python-src \
+    && ./configure --prefix=/opt/python --with-ensurepip=install \
+    && make -j"$(nproc)" \
+    && make altinstall \
+    && rm -rf /var/lib/apt/lists/* /tmp/python.tar.xz /tmp/python-src
+
 FROM ubuntu:24.04@sha256:c4a8d5503dfb2a3eb8ab5f807da5bc69a85730fb49b5cfca2330194ebcc41c7b
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update && apt-get install -y \
-    git curl wget gnupg ca-certificates sudo unzip \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git curl wget gnupg ca-certificates openssh-client sudo unzip xz-utils \
     software-properties-common lsb-release jq \
+    libbz2-1.0 libffi8 libgdbm6 liblzma5 libncursesw6 libreadline8 \
+    libsqlite3-0 libssl3 libuuid1 zlib1g \
     && rm -rf /var/lib/apt/lists/*
 
 # Node.js LTS. Install the official, checksum-verified archive so builds do not
@@ -39,10 +72,13 @@ RUN ARCH="${TARGETARCH:-amd64}" && \
     rm -f "/tmp/${NODE_ARCHIVE}" && \
     node --version | grep -Fx "v${NODE_VERSION}"
 
-# Python — uv manages all package installs.
-RUN apt-get update && apt-get install -y \
-    python3 python3-venv \
-    && rm -rf /var/lib/apt/lists/*
+COPY --from=python-builder /opt/python /usr/local
+RUN ln -s /usr/local /opt/python && \
+    ln -sf /usr/local/bin/python3.14 /usr/local/bin/python3 && \
+    ln -sf /usr/local/bin/python3.14 /usr/local/bin/python && \
+    ln -sf /usr/local/bin/pip3.14 /usr/local/bin/pip3 && \
+    ln -sf /usr/local/bin/pip3.14 /usr/local/bin/pip && \
+    python3 --version | grep -Fx "Python 3.14.7"
 
 COPY --from=ghcr.io/astral-sh/uv:0.11.15@sha256:e590846f4776907b254ac0f44b5b380347af5d90d668138ca7938d1b0c2f98d3 /uv /usr/local/bin/uv
 

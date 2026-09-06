@@ -4,6 +4,15 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking REST changes (called
 out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.14.8, 2026-09-06
+
+Updates the base Python runtime to 3.14.7.
+
+- Builds CPython 3.14.7 from its SHA256-verified official source archive.
+- Uses the new runtime for aicodebox and every child image.
+- Includes runtime libraries and compatible `python`, `python3`, `pip`, and
+  `pip3` commands in the final image.
+
 ## v0.14.7, 2026-09-06
 
 Pins the base image to the current Node.js LTS release.
