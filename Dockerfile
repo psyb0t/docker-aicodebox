@@ -19,10 +19,25 @@ RUN apt-get update && apt-get install -y \
     software-properties-common lsb-release jq \
     && rm -rf /var/lib/apt/lists/*
 
-# Node.js 22 (LTS at time of writing) — child agents that ship as npm
-# packages reuse this.
-RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
-    apt-get install -y nodejs && rm -rf /var/lib/apt/lists/*
+# Node.js LTS. Install the official, checksum-verified archive so builds do not
+# float with a third-party apt repository.
+ARG NODE_VERSION=24.20.0
+ARG NODE_SHA256_amd64=2f2c0da162318f0de47665410c7c8c2ed3d36c8f3105de4bbc61176c70a7cbf2
+ARG NODE_SHA256_arm64=5f4ddab610c1ab2016b3c227cebdbf6d9495161487e4739c7b90090595f465f7
+ARG TARGETARCH
+RUN ARCH="${TARGETARCH:-amd64}" && \
+    case "$ARCH" in \
+        amd64) NODE_ARCH=x64; NODE_SHA256="${NODE_SHA256_amd64}" ;; \
+        arm64) NODE_ARCH=arm64; NODE_SHA256="${NODE_SHA256_arm64}" ;; \
+        *) echo "unsupported TARGETARCH: ${ARCH}" >&2; exit 1 ;; \
+    esac && \
+    NODE_ARCHIVE="node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz" && \
+    curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/${NODE_ARCHIVE}" \
+        -o "/tmp/${NODE_ARCHIVE}" && \
+    echo "${NODE_SHA256}  /tmp/${NODE_ARCHIVE}" | sha256sum -c - && \
+    tar -xJf "/tmp/${NODE_ARCHIVE}" --strip-components=1 -C /usr/local && \
+    rm -f "/tmp/${NODE_ARCHIVE}" && \
+    node --version | grep -Fx "v${NODE_VERSION}"
 
 # Python — uv manages all package installs.
 RUN apt-get update && apt-get install -y \

@@ -5,6 +5,8 @@
 !.env.example
 
 # Local tooling / scratch
+AGENTS.md
+CODEX.local.md
 ANUSTIMES.md
 CLAUDE.md
 git-update.sh

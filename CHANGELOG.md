@@ -4,6 +4,15 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking REST changes (called
 out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.14.7, 2026-09-06
+
+Pins the base image to the current Node.js LTS release.
+
+- Replaced the floating NodeSource 22.x apt setup with the official Node.js
+  24.20.0 archives for amd64 and arm64.
+- Added per-architecture SHA256 verification and a build-time version check.
+- Updated the runtime documentation to identify Node.js 24 LTS.
+
 ## v0.14.6 — 2026-09-04
 
 Adds independent native event retention to `POST /run`.
