@@ -1,0 +1,8 @@
+# Tool packages are built only from the hash-locked module set in go.sum.
+golang.org/x/tools/gopls
+github.com/go-delve/delve/cmd/dlv
+honnef.co/go/tools/cmd/staticcheck
+github.com/fatih/gomodifytags
+github.com/josharian/impl
+github.com/cweill/gotests/gotests
+mvdan.cc/gofumpt

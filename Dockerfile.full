@@ -1,0 +1,196 @@
+# aicodebox:latest-full. The agent-agnostic development toolchain variant.
+#
+# Agent images use this as their full parent instead of each installing the
+# same language tooling. The minimal image remains Dockerfile and is the base
+# for this image.
+ARG BASE_IMAGE=psyb0t/aicodebox:latest
+FROM ${BASE_IMAGE}
+
+USER root
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    AICODEBOX_IMAGE_VARIANT=full
+
+# The base is intentionally lean. This image supplies the editors, diagnostics,
+# databases clients, and build dependencies required for a general coding
+# workspace. Retry across known Ubuntu mirrors because public CI occasionally
+# gets transient mirror failures during multi-architecture builds.
+RUN set -eux; \
+    source_file=/etc/apt/sources.list.d/ubuntu.sources; \
+    architecture="$(dpkg --print-architecture)"; \
+    for attempt in 1 2 3; do \
+        case "$architecture:$attempt" in \
+            amd64:1) mirror=https://archive.ubuntu.com/ubuntu/ ;; \
+            amd64:2) mirror=https://mirrors.edge.kernel.org/ubuntu/ ;; \
+            amd64:3) mirror=https://mirror.csclub.uwaterloo.ca/ubuntu/ ;; \
+            arm64:*) mirror=https://ports.ubuntu.com/ubuntu-ports/ ;; \
+            *) echo "unsupported apt architecture: $architecture" >&2; exit 1 ;; \
+        esac; \
+        sed -i "s|^URIs: .*$|URIs: $mirror|" "$source_file"; \
+        rm -rf /var/lib/apt/lists/*; \
+        if apt-get \
+            -o Acquire::Retries=3 \
+            -o Acquire::http::Timeout=45 \
+            -o Acquire::https::Timeout=45 \
+            update && \
+            apt-get \
+            -o Acquire::Retries=3 \
+            -o Acquire::http::Timeout=45 \
+            -o Acquire::https::Timeout=45 \
+            install -y --no-install-recommends \
+        build-essential make cmake pkg-config libssl-dev \
+        python3-pip python-is-python3 \
+        nano vim htop tmux \
+        unzip zip tar \
+        net-tools iputils-ping dnsutils \
+        tree fd-find ripgrep bat eza silversearcher-ag \
+        shellcheck shfmt httpie \
+        clang-format valgrind gdb strace ltrace \
+        sqlite3 postgresql-client default-mysql-client redis-tools \
+        zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev \
+        libncursesw5-dev xz-utils tk-dev libxml2-dev libxmlsec1-dev \
+        libffi-dev liblzma-dev; then \
+            rm -rf /var/lib/apt/lists/*; \
+            exit 0; \
+        fi; \
+        echo "apt package transaction failed (attempt ${attempt}/3, mirror: $mirror); retrying" >&2; \
+        sleep "$((attempt * 5))"; \
+    done; \
+    echo "apt package transaction failed after 3 attempts" >&2; \
+    exit 1
+
+ARG TARGETARCH
+
+ARG GO_VERSION=1.26.7
+ARG GO_SHA256_AMD64=ffb5f8de10c62550dfddab66b36b57030721e0a44a3218e9e1181d7b59f121ca
+ARG GO_SHA256_ARM64=5a4ec883379d51ee9ce1040d5e87f8d35e20387574dd8c947feb01eabc3c1b37
+RUN architecture="${TARGETARCH:-amd64}" && \
+    case "$architecture" in \
+        amd64) go_sha256="$GO_SHA256_AMD64" ;; \
+        arm64) go_sha256="$GO_SHA256_ARM64" ;; \
+        *) echo "unsupported Go architecture: $architecture" >&2; exit 1 ;; \
+    esac && \
+    go_archive="/tmp/go${GO_VERSION}.linux-${architecture}.tar.gz" && \
+    curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${architecture}.tar.gz" -o "$go_archive" && \
+    echo "$go_sha256  $go_archive" | sha256sum -c - && \
+    tar -xzf "$go_archive" -C /usr/local && \
+    rm -f "$go_archive" && \
+    ln -s /usr/local/go/bin/go /usr/local/bin/go && \
+    ln -s /usr/local/go/bin/gofmt /usr/local/bin/gofmt && \
+    echo 'export PATH="$PATH:/usr/local/go/bin"' > /etc/profile.d/go.sh
+ENV PATH="/usr/local/go/bin:${PATH}" \
+    GOPROXY=https://proxy.golang.org,direct \
+    GOSUMDB=sum.golang.org \
+    GOFLAGS=-mod=readonly
+
+ARG GOLANGCI_LINT_VERSION=2.13.2
+ARG GOLANGCI_LINT_SHA256_AMD64=2277d43b98ec0054280f2ac26b53268bae97682444678a59a657dd565da021d6
+ARG GOLANGCI_LINT_SHA256_ARM64=a2a4e0065aa41be71f7c5ac90f271b61751331e5d04314e62afe4027855f0893
+RUN architecture="${TARGETARCH:-amd64}" && \
+    case "$architecture" in \
+        amd64) lint_sha256="$GOLANGCI_LINT_SHA256_AMD64" ;; \
+        arm64) lint_sha256="$GOLANGCI_LINT_SHA256_ARM64" ;; \
+        *) echo "unsupported golangci-lint architecture: $architecture" >&2; exit 1 ;; \
+    esac && \
+    lint_archive=/tmp/golangci-lint.tar.gz && \
+    curl -fsSL \
+        "https://github.com/golangci/golangci-lint/releases/download/v${GOLANGCI_LINT_VERSION}/golangci-lint-${GOLANGCI_LINT_VERSION}-linux-${architecture}.tar.gz" \
+        -o "$lint_archive" && \
+    echo "$lint_sha256  $lint_archive" | sha256sum -c - && \
+    tar -xzf "$lint_archive" -C /tmp && \
+    install -m 0755 \
+        "/tmp/golangci-lint-${GOLANGCI_LINT_VERSION}-linux-${architecture}/golangci-lint" \
+        /usr/local/bin/golangci-lint && \
+    rm -rf "$lint_archive" \
+        "/tmp/golangci-lint-${GOLANGCI_LINT_VERSION}-linux-${architecture}"
+
+COPY full-go/go.mod full-go/go.sum full-go/tools.txt /tmp/aicodebox-go-tools/
+RUN cd /tmp/aicodebox-go-tools && \
+    go mod download all && \
+    while IFS= read -r package; do \
+        case "$package" in \#*|'') continue ;; esac; \
+        binary="${package##*/}"; \
+        CGO_ENABLED=0 go build -mod=readonly -o "/usr/local/bin/$binary" "$package"; \
+    done < tools.txt && \
+    rm -rf /tmp/aicodebox-go-tools /root/.cache/go-build
+
+ARG GH_VERSION=2.96.0
+ARG GH_SHA256_AMD64=83d5c2ccad5498f58bf6368acb1ab32588cf43ab3a4b1c301bf36328b1c8bd60
+ARG GH_SHA256_ARM64=06f86ec7103d41993b76cd78072f43595c34aaa56506d971d9860e67140bf909
+RUN architecture="${TARGETARCH:-amd64}" && \
+    case "$architecture" in \
+        amd64) gh_sha256="$GH_SHA256_AMD64" ;; \
+        arm64) gh_sha256="$GH_SHA256_ARM64" ;; \
+        *) echo "unsupported gh architecture: $architecture" >&2; exit 1 ;; \
+    esac && \
+    gh_archive=/tmp/gh.tar.gz && \
+    curl -fsSL \
+        "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${architecture}.tar.gz" \
+        -o "$gh_archive" && \
+    echo "$gh_sha256  $gh_archive" | sha256sum -c - && \
+    tar -xzf "$gh_archive" -C /tmp && \
+    install -m 0755 "/tmp/gh_${GH_VERSION}_linux_${architecture}/bin/gh" /usr/local/bin/gh && \
+    rm -rf "$gh_archive" "/tmp/gh_${GH_VERSION}_linux_${architecture}"
+
+ARG TERRAFORM_VERSION=1.15.8
+ARG TERRAFORM_SHA256_AMD64=d25ce7b6902013ad905db3d2eab0be4cd905887fe88b81a6171b8d5503c31f3d
+ARG TERRAFORM_SHA256_ARM64=8891e9dcedc9e3b8950bc6af9d4d8af1f4cfade3062f53b9dc403a89f6ce8c9c
+RUN architecture="${TARGETARCH:-amd64}" && \
+    case "$architecture" in \
+        amd64) terraform_sha256="$TERRAFORM_SHA256_AMD64" ;; \
+        arm64) terraform_sha256="$TERRAFORM_SHA256_ARM64" ;; \
+        *) echo "unsupported Terraform architecture: $architecture" >&2; exit 1 ;; \
+    esac && \
+    terraform_archive=/tmp/terraform.zip && \
+    curl -fsSL \
+        "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_${architecture}.zip" \
+        -o "$terraform_archive" && \
+    echo "$terraform_sha256  $terraform_archive" | sha256sum -c - && \
+    unzip -q "$terraform_archive" -d /tmp/terraform && \
+    install -m 0755 /tmp/terraform/terraform /usr/local/bin/terraform && \
+    rm -rf "$terraform_archive" /tmp/terraform
+
+ARG KUBECTL_VERSION=v1.31.14
+ARG KUBECTL_SHA256_AMD64=8791ec7c8966b61420d55103a5fb948de9f0ca3d7306d789734975ad9704bdb0
+ARG KUBECTL_SHA256_ARM64=3abb0c2d7121e1833831f56fd857a93de386e76d14b64baf86220d0afe495209
+RUN architecture="${TARGETARCH:-amd64}" && \
+    case "$architecture" in \
+        amd64) kubectl_sha256="$KUBECTL_SHA256_AMD64" ;; \
+        arm64) kubectl_sha256="$KUBECTL_SHA256_ARM64" ;; \
+        *) echo "unsupported kubectl architecture: $architecture" >&2; exit 1 ;; \
+    esac && \
+    curl -fsSL "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${architecture}/kubectl" \
+        -o /tmp/kubectl && \
+    echo "$kubectl_sha256  /tmp/kubectl" | sha256sum -c - && \
+    install -m 0755 /tmp/kubectl /usr/local/bin/kubectl && \
+    rm -f /tmp/kubectl
+
+ARG HELM_VERSION=3.21.3
+ARG HELM_SHA256_AMD64=15e041a93a590dce8100f39385cd98c84a765c9e36aeeb9e2dc6ff9e4769e2e0
+ARG HELM_SHA256_ARM64=67f58155079ff9ffab98ba5c88daff0ed9b542f3a4732f5dd426dde7dd0f5244
+RUN architecture="${TARGETARCH:-amd64}" && \
+    case "$architecture" in \
+        amd64) helm_sha256="$HELM_SHA256_AMD64" ;; \
+        arm64) helm_sha256="$HELM_SHA256_ARM64" ;; \
+        *) echo "unsupported Helm architecture: $architecture" >&2; exit 1 ;; \
+    esac && \
+    helm_archive=/tmp/helm.tar.gz && \
+    curl -fsSL "https://get.helm.sh/helm-v${HELM_VERSION}-linux-${architecture}.tar.gz" \
+        -o "$helm_archive" && \
+    echo "$helm_sha256  $helm_archive" | sha256sum -c - && \
+    tar -xzf "$helm_archive" -C /tmp && \
+    install -m 0755 "/tmp/linux-${architecture}/helm" /usr/local/bin/helm && \
+    rm -rf "$helm_archive" "/tmp/linux-${architecture}"
+
+COPY full-node/package.json full-node/pnpm-lock.yaml full-node/.npmrc /opt/aicodebox-node/
+RUN corepack pnpm@11.15.1 install --dir /opt/aicodebox-node \
+        --frozen-lockfile --prod --ignore-scripts && \
+    find /opt/aicodebox-node/node_modules/.bin -maxdepth 1 -type f -executable \
+        -exec ln -sf '{}' /usr/local/bin/ ';' && \
+    ln -sf /opt/aicodebox-node/node_modules/@storybook/cli/dist/bin/index.js \
+        /usr/local/bin/storybook
+
+COPY full-python/requirements.txt /tmp/aicodebox-python-tools/requirements.txt
+RUN python -m pip install --no-cache-dir \
+        --require-hashes -r /tmp/aicodebox-python-tools/requirements.txt && \
+    rm -rf /tmp/aicodebox-python-tools

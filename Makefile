@@ -10,7 +10,7 @@ TAG        := v$(VERSION)
 -include .env
 export
 
-.PHONY: all build run test test-unit lint format clean help version
+.PHONY: all build build-full build-all run test test-unit test-full-image lint format clean help version
 
 all: build ## Build the base image
 
@@ -20,6 +20,16 @@ version: ## Print the version that would be tagged
 build: ## Build the Docker image, tagged with the pyproject version + :latest
 	docker build -t $(IMAGE_NAME):$(TAG) -t $(IMAGE_NAME):latest .
 
+build-full: build ## Build the matching full development-toolchain variant
+	docker build \
+		-f Dockerfile.full \
+		--build-arg BASE_IMAGE=$(IMAGE_NAME):$(TAG) \
+		-t $(IMAGE_NAME):$(TAG)-full \
+		-t $(IMAGE_NAME):latest-full \
+		.
+
+build-all: build build-full ## Build the minimal and full image variants
+
 run: build ## Drop into an interactive shell inside the base image
 	docker run --rm -it $(IMAGE_NAME):$(TAG) bash
 
@@ -27,6 +37,9 @@ test: test-unit ## Run all tests
 
 test-unit: ## Run the python unit-test suite locally (no docker)
 	uv run --group dev pytest -q
+
+test-full-image: build-full ## Build full and verify the documented CLI toolchain
+	IMAGE=$(IMAGE_NAME):latest-full bash scripts/test-full-image.sh
 
 lint: ## Lint python sources
 	uv run --group dev flake8 aicodebox/
@@ -38,6 +51,9 @@ format: ## Format python sources
 
 clean: ## Remove built images and python caches
 	docker rmi $(IMAGE_NAME):$(TAG) 2>/dev/null || true
+	docker rmi $(IMAGE_NAME):latest 2>/dev/null || true
+	docker rmi $(IMAGE_NAME):$(TAG)-full 2>/dev/null || true
+	docker rmi $(IMAGE_NAME):latest-full 2>/dev/null || true
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 	rm -rf .pytest_cache .mypy_cache *.egg-info build dist
 

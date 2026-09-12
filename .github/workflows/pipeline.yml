@@ -17,6 +17,9 @@ jobs:
       target_platforms: "linux/amd64,linux/arm64"
       scan_severity: "high"
       cache_mode: "min"
+      # The full image inherits the minimal tag. Stage 1 waits for stage 0 to
+      # push this run's matching minimal image first.
+      build_targets: '[{"file":"Dockerfile","tag_suffix":""},{"file":"Dockerfile.full","tag_suffix":"-full","stage":1}]'
 
     secrets:
       dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}

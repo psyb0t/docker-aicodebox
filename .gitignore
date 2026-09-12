@@ -26,5 +26,9 @@ dist/
 venv/
 .telemetry
 
+# Full-image package-manager cache. The pinned manifests under full-node/ are
+# committed, but pnpm's local store is build output.
+full-node/.pnpm-store/
+
 # Cloned upstream sources read during research — scratch, never shipped
 .research_files/

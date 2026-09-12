@@ -33,6 +33,7 @@ That's it. The base owns the surfaces. Your adapter translates "run this prompt"
   - [MCP server](#mcp-server)
 - [Configuration](#configuration)
 - [Child image recipe](#child-image-recipe)
+- [Full image](#full-image)
 - [Development](#development)
 - [License](#license)
 
@@ -46,6 +47,13 @@ That's it. The base owns the surfaces. Your adapter translates "run this prompt"
 | **Modes**   | All optional, all opt-in via env vars. Run none or one per container. Exception: telegram + cron can share a container — cron runs in-thread inside the telegram process.                          |
 | **Auth**    | `AICODEBOX_API_MODE_TOKEN` gates API mode; `AICODEBOX_MCP_MODE_TOKEN` gates MCP. Single bearer per surface, no fallback between them. Empty = no auth. Telegram has its own allowlist.              |
 | **State**   | Per-chat overrides + cron history go under `$HOME/.aicodebox/`. Bind-mount that path if you want it to outlive the container. The package itself stores nothing.                                    |
+
+`psyb0t/aicodebox:latest` is deliberately small. The matching
+`psyb0t/aicodebox:latest-full` variant adds the shared development toolchain
+for agent images that need it: Go and its language servers and linters, pinned
+Node and Python developer tools, editors and diagnostics, database clients,
+and `gh`, Terraform, kubectl, and Helm. It is built after the minimal image in
+CI, so the full tag inherits the minimal image from the same release.
 
 ## The adapter contract
 
@@ -271,13 +279,29 @@ docker run --rm -p 8080:8080 \
 
 A reference child image lives at [psyb0t/pibox](https://github.com/psyb0t/docker-pibox) — wraps [pi-coding-agent](https://github.com/earendil-works/pi-coding-agent) and uses this base verbatim.
 
+## Full image
+
+Use the full variant only when the agent needs a general development toolchain:
+
+```dockerfile
+FROM psyb0t/aicodebox:latest-full
+```
+
+It keeps the same entrypoint, workspace contract, Python package, and mode
+surfaces as `latest`. The difference is the toolchain. A child image should
+select one parent image per variant and install only its agent-specific CLI,
+adapter, entrypoint, and configuration.
+
 ## Development
 
 ```bash
 make help            # list targets
 make build           # docker build .
+make build-full      # build aicodebox:latest-full on the matching local minimal tag
+make build-all        # build both variants
 make test            # python unit tests (199 cases, adapter contract, modes, helpers)
 make test-unit       # same as test
+make test-full-image # build full and verify every documented CLI tool
 make lint            # flake8 + pyright
 make format          # isort + black
 make clean           # nuke caches + the built image

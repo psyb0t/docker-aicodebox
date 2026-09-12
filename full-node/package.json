@@ -1,0 +1,27 @@
+{
+  "name": "aicodebox-full-node-tools",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@11.15.1",
+  "dependencies": {
+    "@angular/cli": "22.0.7",
+    "@storybook/cli": "10.5.3",
+    "@typescript-eslint/eslint-plugin": "8.63.0",
+    "@typescript-eslint/parser": "8.63.0",
+    "@vue/cli": "5.0.9",
+    "create-react-app": "5.1.0",
+    "eslint": "10.7.0",
+    "express-generator": "4.16.1",
+    "http-server": "14.1.1",
+    "lighthouse": "13.4.0",
+    "newman": "6.2.2",
+    "nodemon": "3.1.14",
+    "pm2": "7.0.3",
+    "pnpm": "11.15.1",
+    "prettier": "3.9.5",
+    "serve": "14.2.6",
+    "ts-node": "10.9.2",
+    "typescript": "7.0.2",
+    "yarn": "1.22.22"
+  }
+}

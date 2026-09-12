@@ -4,6 +4,18 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking REST changes (called
 out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.15.0, 2026-09-12
+
+Adds the full development-toolchain image variant.
+
+- Publishes `psyb0t/aicodebox:latest-full` alongside the minimal `latest`
+  image. The matching version tag is `v0.15.0-full`.
+- Moves the shared Go, Node, Python, editor, diagnostic, database-client, and
+  operations toolchain into the base image, so agent images can inherit it
+  instead of each rebuilding it.
+- Adds `make build-full`, `make build-all`, and `make test-full-image`. CI
+  publishes the matching minimal image before building the full variant.
+
 ## v0.14.8, 2026-09-06
 
 Updates the base Python runtime to 3.14.7.

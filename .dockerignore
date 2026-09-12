@@ -19,3 +19,7 @@ README.md
 LICENSE
 Makefile
 .telemetry/
+.testing/
+.research_files/
+AGENTS.md
+full-node/.pnpm-store/
