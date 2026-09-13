@@ -10,7 +10,7 @@ TAG        := v$(VERSION)
 -include .env
 export
 
-.PHONY: all build build-full build-all run test test-unit test-full-image lint format clean help version
+.PHONY: all build build-full build-all full-node-lock full-python-lock run test test-unit test-full-image lint format clean help version
 
 all: build ## Build the base image
 
@@ -29,6 +29,22 @@ build-full: build ## Build the matching full development-toolchain variant
 		.
 
 build-all: build build-full ## Build the minimal and full image variants
+
+full-node-lock: ## Regenerate the full-image Node lockfile
+	docker run --rm --user "$$(id -u):$$(id -g)" \
+		-e HOME=/tmp -e COREPACK_HOME=/tmp/corepack \
+		-v "$(CURDIR)/full-node:/work" -w /work \
+		node:24.20.0-bookworm-slim@sha256:ba849c60be29959425b8734d57b8b4b7d56f98edd9504c9af091d5281095a71e \
+		bash -lc 'corepack pnpm@12.3.4 install --lockfile-only --ignore-scripts'
+
+full-python-lock: build ## Regenerate the full-image Python requirements lockfile
+	docker run --rm --user "$$(id -u):$$(id -g)" \
+		-e UV_CACHE_DIR=/tmp/uv-cache \
+		-v "$(CURDIR)/full-python:/work" -w /work \
+		--entrypoint uv $(IMAGE_NAME):$(TAG) \
+		pip compile --python-version 3.14 \
+			--exclude-newer 2026-09-06T19:11:00Z --generate-hashes \
+			-o requirements.txt requirements.in
 
 run: build ## Drop into an interactive shell inside the base image
 	docker run --rm -it $(IMAGE_NAME):$(TAG) bash

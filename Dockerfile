@@ -10,7 +10,7 @@
 #   - install your agent binary
 #   - uv pip install --system your adapter package
 #   - ENV AICODEBOX_ADAPTER=yourpkg.adapter:YourAdapter
-FROM ubuntu:24.04@sha256:c4a8d5503dfb2a3eb8ab5f807da5bc69a85730fb49b5cfca2330194ebcc41c7b AS python-builder
+FROM ubuntu:24.04@sha256:224a1869083a311ef3f13648a154ba79832fbef6364d31493642ca03082da254 AS python-builder
 
 ARG PYTHON_VERSION=3.14.7
 ARG PYTHON_SHA256=3b48dac8fb59f62eaa67ac83c1eb12bda1b7a08406dd286e252c11a66be27f81
@@ -41,7 +41,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && make altinstall \
     && rm -rf /var/lib/apt/lists/* /tmp/python.tar.xz /tmp/python-src
 
-FROM ubuntu:24.04@sha256:c4a8d5503dfb2a3eb8ab5f807da5bc69a85730fb49b5cfca2330194ebcc41c7b
+FROM ubuntu:24.04@sha256:224a1869083a311ef3f13648a154ba79832fbef6364d31493642ca03082da254
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -80,7 +80,7 @@ RUN ln -s /usr/local /opt/python && \
     ln -sf /usr/local/bin/pip3.14 /usr/local/bin/pip && \
     python3 --version | grep -Fx "Python 3.14.7"
 
-COPY --from=ghcr.io/astral-sh/uv:0.11.15@sha256:e590846f4776907b254ac0f44b5b380347af5d90d668138ca7938d1b0c2f98d3 /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.12.10@sha256:2bb3ebca0a796a155094a27773d290c4b074572e6107f171d88d086682fd2500 /uv /usr/local/bin/uv
 
 ENV UV_COMPILE_BYTECODE=1
 

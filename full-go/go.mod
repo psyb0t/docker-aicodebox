@@ -1,6 +1,6 @@
 module github.com/psyb0t/aicodebox-full-tools
 
-go 1.26.7
+go 1.26.8
 
 require (
 	github.com/cweill/gotests v1.9.0

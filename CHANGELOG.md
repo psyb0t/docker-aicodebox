@@ -4,6 +4,12 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking REST changes (called
 out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.15.1, 2026-09-13
+
+Refreshes the base image, application dependencies, build tools, and locked
+full-image Node and Python toolchains to age-eligible upstream releases. Adds
+the async pytest plugin required to run the full project's test suite.
+
 ## v0.15.0, 2026-09-12
 
 Adds the full development-toolchain image variant.

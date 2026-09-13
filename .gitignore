@@ -9,6 +9,7 @@ AGENTS.md
 CODEX.local.md
 ANUSTIMES.md
 CLAUDE.md
+PLAN.md
 git-update.sh
 pyrightconfig.json
 .mypy_cache/
@@ -29,6 +30,7 @@ venv/
 # Full-image package-manager cache. The pinned manifests under full-node/ are
 # committed, but pnpm's local store is build output.
 full-node/.pnpm-store/
+.pnpm-store/
 
 # Cloned upstream sources read during research — scratch, never shipped
 .research_files/

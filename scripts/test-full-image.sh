@@ -33,8 +33,17 @@ docker run --rm -e AICODEBOX_AGENT_BINARY=/bin/bash "$IMAGE" -lc '
 
     [[ "${AICODEBOX_IMAGE_VARIANT:-}" == "full" ]]
     [[ "$(id -un)" == "aicode" ]]
-    [[ "$(go version)" == *"go1.26.7"* ]]
+    [[ "$(go version)" == *"go1.26.8"* ]]
     [[ "$(python --version 2>&1)" == "Python 3.14.7" ]]
+    [[ "$(node --version)" == "v24.20.0" ]]
+    [[ "$(pnpm --version)" == "12.3.4" ]]
+    [[ "$(gh --version)" == "gh version 2.100.0"* ]]
+    [[ "$(terraform version)" == "Terraform v1.16.1"* ]]
+    [[ "$(kubectl version --client --output=json | jq -r .clientVersion.gitVersion)" == "v1.37.0" ]]
+    [[ "$(helm version --template "{{ .Version }}")" == "v3.21.4" ]]
+    [[ "$(isort --version-number)" == "9.0.1"* ]]
+    [[ "$(mypy --version)" == "mypy 2.3.1"* ]]
+    [[ "$(poetry --version)" == "Poetry (version 2.4.3)" ]]
     python -c "import aicodebox"
 
     tools=(
@@ -55,7 +64,8 @@ docker run --rm -e AICODEBOX_AGENT_BINARY=/bin/bash "$IMAGE" -lc '
         }
     done
 
-    python -c "import pytest_cov"
+    python -c "import pytest_asyncio, pytest_cov"
+    pytest --help | grep -F -- "--asyncio-mode" >/dev/null
     pytest --help | grep -F -- "--cov" >/dev/null
 '
 log INFO "full image command contract passed"
