@@ -13,11 +13,16 @@ from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Callable
 
 from aicodebox.adapters import (
+    EVENT_MODE_FULL,
+    NATIVE_EVENT_KEY,
+    NATIVE_LINE_KEY,
     ProcHook,
     RunRequest,
     RunResult,
     StreamEvent,
+    STREAM_EVENT_NATIVE,
     get_adapter,
+    parse_native_event_lines,
     parse_json_response,
 )
 
@@ -59,9 +64,8 @@ def spec_to_request(
 ) -> RunRequest:
     """Convert a mode-facing RunSpec into an adapter-facing RunRequest.
 
-    Public — modes that need a RunRequest for non-run code paths (e.g.
-    ``adapter.parse_events`` invoked after a completed run) reuse this so
-    the conversion stays in one place.
+    Public helper for modes that need a RunRequest outside ``run`` so the
+    conversion stays in one place.
     """
     model = spec.model or os.environ.get("ANTHROPIC_MODEL") or None
     return RunRequest(
@@ -452,13 +456,13 @@ def _run_popen(
 
 
 def _attach_events(result: RunResult, adapter: Any, req: RunRequest) -> None:
-    """Best-effort retain native events only when the caller asked for them."""
+    """Retain all provider stdout lines only when the caller asked for them."""
     if req.event_mode != "full":
         return
     try:
-        result.events = adapter.parse_events(result.raw_stdout, req)
+        result.events = parse_native_event_lines(result.raw_stdout)
     except Exception:  # noqa: BLE001
-        log.exception("event parsing failed for adapter=%s", adapter.name)
+        log.exception("event retention failed for adapter=%s", adapter.name)
         result.events = []
 
 
@@ -556,6 +560,21 @@ async def run_stream(spec: RunSpec) -> AsyncIterator[StreamEvent]:
                 if not line_bytes:
                     break
                 line = line_bytes.decode(errors="replace").rstrip("\r\n")
+                if req.event_mode == EVENT_MODE_FULL:
+                    try:
+                        native_event = json.loads(line)
+                    except json.JSONDecodeError:
+                        native_data = {NATIVE_LINE_KEY: line}
+                    else:
+                        native_data = (
+                            {NATIVE_EVENT_KEY: native_event}
+                            if isinstance(native_event, dict)
+                            else {NATIVE_LINE_KEY: line}
+                        )
+                    yield StreamEvent(
+                        type=STREAM_EVENT_NATIVE,
+                        data=native_data,
+                    )
                 event = adapter.parse_stream_event(line, req)
                 if event is not None:
                     yield event

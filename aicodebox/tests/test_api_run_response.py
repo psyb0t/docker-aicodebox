@@ -27,6 +27,23 @@ class _RecordingAdapter(adapter_base.AgentAdapter):
         return [self.binary]
 
 
+class _NativeLineAdapter(adapter_base.AgentAdapter):
+    """Run a real subprocess with a provider event and a plain diagnostic."""
+
+    name = "native-lines"
+    binary = "/bin/sh"
+
+    def build_argv(self, req):
+        del req
+        return [
+            self.binary,
+            "-c",
+            "printf '%s\\n%s\\n' "
+            "'{\"type\":\"thinking_delta\",\"text\":\"reasoning\"}' "
+            "'provider diagnostic'",
+        ]
+
+
 @pytest.fixture
 def recording_adapter(monkeypatch):
     monkeypatch.setitem(
@@ -38,6 +55,20 @@ def recording_adapter(monkeypatch):
     )
     adapter_base.reset_adapter_cache()
     yield _RecordingAdapter
+    adapter_base.reset_adapter_cache()
+
+
+@pytest.fixture
+def native_line_adapter(monkeypatch):
+    monkeypatch.setitem(
+        sys.modules, "aicodebox.tests._native_lines", sys.modules[__name__],
+    )
+    monkeypatch.setenv(
+        "AICODEBOX_ADAPTER",
+        "aicodebox.tests.test_api_run_response:_NativeLineAdapter",
+    )
+    adapter_base.reset_adapter_cache()
+    yield _NativeLineAdapter
     adapter_base.reset_adapter_cache()
 
 
@@ -208,7 +239,11 @@ def test_post_run_full_event_mode_contract(
     ))
     from aicodebox.modes.api import server as server_mod
 
-    monkeypatch.setattr(server_mod, "resolve_workspace", lambda _: str(tmp_path))
+    monkeypatch.setattr(
+        server_mod,
+        "resolve_workspace",
+        lambda _: str(tmp_path),
+    )
     with TestClient(server_mod.app) as client:
         response = client.post(
             "/run",
@@ -225,6 +260,43 @@ def test_post_run_full_event_mode_contract(
         "eventType": "tool_execution_end",
         "event": {"type": "tool_execution_end", "toolName": "bash"},
     }]
+
+
+def test_post_run_full_mode_preserves_every_native_stdout_line(
+    native_line_adapter, monkeypatch, tmp_path,
+):
+    del native_line_adapter
+    from aicodebox.modes.api import server as server_mod
+
+    monkeypatch.setattr(
+        server_mod,
+        "resolve_workspace",
+        lambda _: str(tmp_path),
+    )
+    with TestClient(server_mod.app) as client:
+        response = client.post(
+            "/run",
+            json={"prompt": "x", "eventMode": "full"},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["events"] == [
+        {
+            "sequence": 1,
+            "attempt": 0,
+            "backend": "native-lines",
+            "eventType": "thinking_delta",
+            "event": {"type": "thinking_delta", "text": "reasoning"},
+        },
+        {
+            "sequence": 2,
+            "attempt": 0,
+            "backend": "native-lines",
+            "eventType": "raw_stdout",
+            "event": {"line": "provider diagnostic"},
+        },
+    ]
 
 
 # ── json mode: 3x retry on parse failure ─────────────────────────────────────

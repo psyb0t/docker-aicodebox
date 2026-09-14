@@ -38,7 +38,14 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict
 
-from aicodebox.adapters import get_adapter, parse_json_response
+from aicodebox.adapters import (
+    EVENT_MODE_FULL,
+    NATIVE_EVENT_KEY,
+    NATIVE_LINE_KEY,
+    STREAM_EVENT_NATIVE,
+    get_adapter,
+    parse_json_response,
+)
 from aicodebox.modes.api.auth import check_bearer
 from aicodebox.modes.api.runs import REGISTRY as RUNS
 from aicodebox.modes.api.workspace import (
@@ -59,6 +66,12 @@ UPLOAD_DIR = Path(ROOT_WORKSPACE) / "_oai_uploads"
 UPLOAD_TTL_SECONDS = 24 * 3600
 REMOTE_IMAGE_TIMEOUT = 30
 REMOTE_IMAGE_MAX_BYTES = 50 * 1024 * 1024
+NATIVE_SSE_EVENT_NAME = "aicodebox.native"
+NATIVE_SSE_RAW_STDOUT_TYPE = "raw_stdout"
+STREAM_OPTIONS_NATIVE_EVENTS = "include_aicodebox_events"
+STREAM_OPTIONS_NATIVE_EVENTS_ERROR = (
+    "stream_options.include_aicodebox_events must be a boolean"
+)
 
 # Per-request ephemeral workspaces live under here. Schema-mode requests
 # that didn't specify a workspace get one of these so the retry helper
@@ -102,6 +115,7 @@ class _OAIRequest(BaseModel):
     tool_choice: Any = None
     response_format: dict | None = None
     reasoning_effort: str | None = None
+    stream_options: dict[str, Any] | None = None
 
 
 # ── image / SSRF helpers ─────────────────────────────────────────────────────
@@ -732,16 +746,25 @@ async def chat_completions(
         default=None, alias="x-claude-append-system-prompt",
     ),
 ) -> Any:
+    include_native_events = _include_native_stream_events(req.stream_options)
+    if include_native_events and not req.stream:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "stream_options.include_aicodebox_events requires stream=true"
+            ),
+        )
     x_workspace = x_workspace or x_claude_workspace
     x_continue = x_continue or x_claude_continue
     x_append_system_prompt = x_append_system_prompt or x_claude_append_system_prompt
     log.info(
         "oai chat: request model=%r stream=%s messages=%d "
-        "schema_via=%s has_resume=%s no_tools=%s",
+        "schema_via=%s has_resume=%s no_tools=%s native_events=%s",
         req.model, req.stream, len(req.messages),
         _schema_source(req.response_format, x_json_schema),
         x_resume is not None,
         x_no_tools is not None,
+        include_native_events,
     )
     # Tool-calling mode: engage when the caller supplies non-empty ``tools``
     # AND tool_choice isn't "none". In that mode we flatten the tool-aware
@@ -881,6 +904,7 @@ async def chat_completions(
             tools_allowlist=tools_allowlist,
             no_tools=no_tools,
             output_format=schema_output_format,
+            include_native_events=include_native_events,
         )
 
     spec = RunSpec(
@@ -898,7 +922,10 @@ async def chat_completions(
         timeout_seconds=timeout_seconds,
         tools_allowlist=tools_allowlist,
         no_tools=no_tools,
+        event_mode=EVENT_MODE_FULL if include_native_events else "none",
     )
+
+    native_event_attempts: list[list[dict[str, Any]]] | None = None
 
     if not RUNS.acquire_workspace(workspace):
         raise HTTPException(status_code=409, detail="workspace busy, retry later")
@@ -915,18 +942,12 @@ async def chat_completions(
         int | None,
         str | None,
     ]:
-        """Returns
-        ``(content, usage, attempts, error_status, error_detail)``.
+        """Return content, usage, attempts, and any API error details."""
 
-        ``attempts`` is the per-attempt breakdown from
-        ``run_with_json_retry`` (None outside schema mode). ``usage`` is
-        the SUM across all attempts.
+        def capture_native_events(result: Any) -> None:
+            nonlocal native_event_attempts
+            native_event_attempts = result.event_attempts or [result.events]
 
-        ``error_status`` is the HTTP code the route should raise (``None``
-        on success). Splitting "agent crashed" from "schema validation
-        failed" lets the route surface them as 500 vs 422 respectively —
-        same wire shape, different semantics.
-        """
         def hook(proc: Any) -> None:
             RUNS.register_proc(rid, proc)
         # Schema runs go through the retry helper — same self-correction
@@ -955,6 +976,7 @@ async def chat_completions(
                     if combined_mode else None
                 ),
             )
+            capture_native_events(result)
             if result.exit_code != 0:
                 log.warning(
                     "oai chat (schema): agent rc=%s stderr=%r",
@@ -1021,6 +1043,7 @@ async def chat_completions(
             return content, result.usage or {}, result.attempts, None, None
 
         result = run_agent(spec, proc_hook=hook)
+        capture_native_events(result)
         if result.exit_code != 0:
             log.warning(
                 "oai chat: agent rc=%s stderr=%r",
@@ -1110,12 +1133,17 @@ async def chat_completions(
     if attempts:
         envelope["aicodebox_attempts"] = attempts
 
+    native_events = _native_event_envelopes(
+        native_event_attempts,
+        get_adapter().name,
+    ) if include_native_events else []
+
     # tool/schema modes computed the full answer above; if the caller asked
     # for a stream, replay that finished envelope as a single-shot SSE stream
     # so their streaming client gets a valid stream instead of a 400.
     if buffered_stream:
         return StreamingResponse(
-            _envelope_as_sse(envelope, cid, created),
+            _envelope_as_sse(envelope, cid, created, native_events),
             media_type="text/event-stream",
         )
     return envelope
@@ -1125,7 +1153,10 @@ async def chat_completions(
 
 
 def _envelope_as_sse(
-    envelope: dict[str, Any], cid: str, created: int,
+    envelope: dict[str, Any],
+    cid: str,
+    created: int,
+    native_events: list[dict[str, Any]],
 ) -> AsyncIterator[str]:
     """Replay a finished chat.completion envelope as an SSE chunk stream.
 
@@ -1140,6 +1171,8 @@ def _envelope_as_sse(
     finish = choice.get("finish_reason") or "stop"
 
     async def gen() -> AsyncIterator[str]:
+        for native_event in native_events:
+            yield _sse_native_event(native_event)
         yield _sse_chunk(cid, created, model, {"role": "assistant"})
         tool_calls = message.get("tool_calls")
         if tool_calls:
@@ -1175,6 +1208,59 @@ def _sse_chunk(
     return f"data: {json.dumps(obj)}\n\n"
 
 
+def _include_native_stream_events(
+    stream_options: dict[str, Any] | None,
+) -> bool:
+    if stream_options is None:
+        return False
+    if STREAM_OPTIONS_NATIVE_EVENTS not in stream_options:
+        return False
+    value = stream_options[STREAM_OPTIONS_NATIVE_EVENTS]
+    if type(value) is not bool:
+        raise HTTPException(
+            status_code=400,
+            detail=STREAM_OPTIONS_NATIVE_EVENTS_ERROR,
+        )
+    return value
+
+
+def _native_event_type(event: dict[str, Any]) -> str:
+    provider_event = event.get(NATIVE_EVENT_KEY)
+    if isinstance(provider_event, dict):
+        event_type = provider_event.get("type")
+        if isinstance(event_type, str) and event_type:
+            return event_type
+    if NATIVE_LINE_KEY in event:
+        return NATIVE_SSE_RAW_STDOUT_TYPE
+    return "unknown"
+
+
+def _native_event_envelopes(
+    event_attempts: list[list[dict[str, Any]]] | None,
+    backend: str,
+) -> list[dict[str, Any]]:
+    envelopes: list[dict[str, Any]] = []
+    sequence = 0
+    for attempt, events in enumerate(event_attempts or []):
+        for event in events:
+            sequence += 1
+            native_event = {NATIVE_EVENT_KEY: event}
+            if NATIVE_LINE_KEY in event:
+                native_event = event
+            envelopes.append({
+                "sequence": sequence,
+                "attempt": attempt,
+                "backend": backend,
+                "eventType": _native_event_type(native_event),
+                "event": native_event.get(NATIVE_EVENT_KEY, native_event),
+            })
+    return envelopes
+
+
+def _sse_native_event(envelope: dict[str, Any]) -> str:
+    return f"event: {NATIVE_SSE_EVENT_NAME}\ndata: {json.dumps(envelope)}\n\n"
+
+
 async def _stream_response(
     *,
     prompt: str,
@@ -1192,6 +1278,7 @@ async def _stream_response(
     tools_allowlist: list[str] | None = None,
     no_tools: bool = False,
     output_format: str | None = None,
+    include_native_events: bool = False,
 ) -> StreamingResponse:
     if not RUNS.acquire_workspace(workspace):
         raise HTTPException(status_code=409, detail="workspace busy, retry later")
@@ -1217,14 +1304,31 @@ async def _stream_response(
         )
         if output_format is not None:
             spec_kwargs["output_format"] = output_format
+        if include_native_events:
+            spec_kwargs["event_mode"] = EVENT_MODE_FULL
         spec = RunSpec(**spec_kwargs)
         finish: str = "stop"
+        native_sequence = 0
         try:
             yield _sse_chunk(
                 cid, created, req_model,
                 {"role": "assistant", "content": ""},
             )
             async for event in run_stream(spec):
+                if event.type == STREAM_EVENT_NATIVE and include_native_events:
+                    native_sequence += 1
+                    native_record = event.data or {}
+                    yield _sse_native_event({
+                        "sequence": native_sequence,
+                        "attempt": 0,
+                        "backend": get_adapter().name,
+                        "eventType": _native_event_type(native_record),
+                        "event": native_record.get(
+                            NATIVE_EVENT_KEY,
+                            native_record,
+                        ),
+                    })
+                    continue
                 if event.type == "delta" and event.text:
                     yield _sse_chunk(
                         cid, created, req_model, {"content": event.text},

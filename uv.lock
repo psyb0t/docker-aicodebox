@@ -7,7 +7,7 @@ exclude-newer = "2026-09-06T19:11:00Z"
 
 [[package]]
 name = "aicodebox"
-version = "0.15.1"
+version = "0.16.0"
 source = { editable = "." }
 dependencies = [
     { name = "croniter" },

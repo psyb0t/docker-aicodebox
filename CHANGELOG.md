@@ -4,6 +4,19 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking REST changes (called
 out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.16.0, 2026-09-14
+
+Adds opt-in native provider records to OpenAI-compatible streaming.
+
+- Send `"stream_options": {"include_aicodebox_events": true}` with
+  `stream: true` to receive named `aicodebox.native` SSE events alongside the
+  standard OpenAI chunks. Existing content chunks and `[DONE]` are unchanged.
+- Each native event carries its sequence, retry attempt, adapter backend, event
+  type, and the original provider object or raw stdout line. This preserves
+  thinking, tool, and diagnostic records without altering normal streams.
+- The option is rejected with `400` unless its value is a boolean and
+  `stream: true` is set.
+
 ## v0.15.1, 2026-09-13
 
 Refreshes the base image, application dependencies, build tools, and locked

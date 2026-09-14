@@ -22,6 +22,15 @@ ENV AICODEBOX_ADAPTER=mypkg.adapter:MyAdapter \
 
 That's it. The base owns the surfaces. Your adapter translates "run this prompt" into whatever your agent's CLI expects. New agent lands in an afternoon.
 
+`aicodebox` is a base image, not a host launcher. Use a child wrapper such as
+[`claudebox`](https://github.com/psyb0t/docker-claudebox),
+[`codexbox`](https://github.com/psyb0t/docker-codexbox), or
+[`pibox`](https://github.com/psyb0t/docker-pibox) for local agent work. Those
+wrappers mount the requested workspace and the matching agent state. Child
+agents call a sibling wrapper directly when it is installed beside their own
+wrapper. They must not reconstruct its Docker command or mount another
+agent's state themselves.
+
 ## Table of Contents
 
 - [What's in the box](#whats-in-the-box)
@@ -86,13 +95,11 @@ class MyAdapter(AgentAdapter):
     def parse_stream_event(self, line: str, req: RunRequest) -> StreamEvent | None:
         return StreamEvent(type="delta", text=line + "\n") if line else None
 
-    # Optional: native events surfaced in /run's ``events`` field when
-    # the caller sets ``eventMode`` to ``full``. Runs once over completed
-    # stdout. Preserve provider records without dropping fields. Plain-text
-    # adapters return [] (the default).
-    def parse_events(self, stdout: str, req: RunRequest) -> list[dict]:
-        return []
 ```
+
+Full event retention is runner-owned. With `eventMode: "full"`, it keeps each
+non-empty stdout line. JSON objects remain provider records. Diagnostics,
+malformed JSON, and JSON values that are not objects remain raw line records.
 
 ```dockerfile
 ENV AICODEBOX_ADAPTER=mypkg.adapter:MyAdapter
@@ -133,6 +140,12 @@ Modes are controlled by env vars. Set the flag, the entrypoint starts that mode.
 - `DELETE /run/{id}` — kill an in-flight run
 - `GET|PUT|DELETE /files/{path}` — workspace file CRUD
 - `POST /openai/v1/chat/completions` — OpenAI-compatible (streaming + non-streaming). Plug it into anything that speaks OpenAI. **Schema-validated JSON output**: stock OpenAI clients drive it via the standard `response_format` body field (`{"type":"json_object"}` for permissive, `{"type":"json_schema","json_schema":{"name":"...","schema":{...}}}` for structured outputs); the proprietary `x-aicodebox-json-schema` header is supported as a fallback. Body field wins if both are set. Schema mode runs up to 3 self-correction retries — success → canonical JSON in `message.content`, retries exhausted → **422**, agent process crash → **500** with exit code + stderr in `detail`, combined with `stream=true` → buffered SSE (see below). Additional RunSpec knobs via `x-aicodebox-*` headers: `workspace`, `continue`, `append-system-prompt`, `resume`, `extra-args`, `timeout-seconds`, `tools-allowlist`, `no-tools`. Malformed header values surface as 400 with the offending header name. When schema mode runs retries, `usage` is the **sum** across all attempts (input/output/total/cache fields all summed), and the envelope carries a vendor-extension `aicodebox_attempts: [{index, usage, exitCode, parseError}, ...]` so callers can see the per-attempt breakdown (OAI-only clients ignore the unknown field). **Cheap retries via session continuation**: schema requests that omit `x-aicodebox-workspace` get a per-request ephemeral workspace under `/tmp/aicodebox/<uuid>/` (cleaned up in `finally`); retries then run with `no_continue=False` and a minimal corrective prompt (error + directive + schema) instead of replaying the full original input, cutting per-retry input cost roughly 100x on large prompts. Callers that DO provide their own workspace fall back to fresh-session retries that re-state the original task — safe across any workspace, but more expensive. **Client-executed tool calling**: send the standard `tools` array (+ optional `tool_choice`) and the machine acts as a plain function-calling model — it responds with `tool_calls` + `finish_reason:"tool_calls"` when it wants a tool, your client runs the tool and sends the `role:"tool"` result back, and the loop continues (stateless, resend full history each round, exactly like OpenAI). `tool_choice` supports `auto`/`none`/`required`/`{type:"function",function:{name}}`. **`tools` + `response_format` compose** (agentic-then-structured): a tool-call turn returns `tool_calls`/`finish_reason:"tool_calls"` and is *not* schema-checked, while the model's final answer turn is validated against the schema (with retry) and returned as canonical JSON — so a multi-tool flow can end in a structured reply. **Streaming for tool/schema modes** (`stream=true` with `tools` or `response_format`) is served as **buffered SSE**: the full answer is computed, then replayed as a single-shot `text/event-stream` (opening role chunk → one `content`/`tool_calls` delta with the required `index` → finish chunk → `data: [DONE]`) — a valid stream, just not token-incremental. Plain chat still streams incrementally. In tool mode the harness's own internal tools default **off** (pure function-caller); send `x-aicodebox-no-tools: 0` to re-enable the hybrid (internal + client tools together).
+
+  For a stream that also needs every native provider record, send
+  `"stream_options": {"include_aicodebox_events": true}`. The response adds
+  named `aicodebox.native` SSE records with `{sequence, attempt, backend,
+  eventType, event}` before the ordinary OpenAI chunks. Normal content chunks
+  and `[DONE]` stay unchanged. The option requires `stream: true`.
 - `GET /openai/v1/models` — model list from the adapter
 - `POST /mcp` — MCP server (mounted only when `AICODEBOX_MCP_MODE=1`; auth via `AICODEBOX_MCP_MODE_TOKEN`, separate from the API bearer)
 

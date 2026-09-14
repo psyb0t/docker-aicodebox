@@ -1,10 +1,15 @@
 from aicodebox.adapters.base import (
     AgentAdapter,
+    EVENT_MODE_FULL,
+    NATIVE_EVENT_KEY,
+    NATIVE_LINE_KEY,
     ProcHook,
     RunRequest,
     RunResult,
     StreamEvent,
+    STREAM_EVENT_NATIVE,
     get_adapter,
+    parse_native_event_lines,
     parse_json_response,
     reset_adapter_cache,
     strip_json_fences,
@@ -12,12 +17,17 @@ from aicodebox.adapters.base import (
 
 __all__ = [
     "AgentAdapter",
+    "EVENT_MODE_FULL",
+    "NATIVE_EVENT_KEY",
+    "NATIVE_LINE_KEY",
     "ProcHook",
     "RunRequest",
     "RunResult",
     "StreamEvent",
+    "STREAM_EVENT_NATIVE",
     "get_adapter",
     "parse_json_response",
+    "parse_native_event_lines",
     "reset_adapter_cache",
     "strip_json_fences",
 ]

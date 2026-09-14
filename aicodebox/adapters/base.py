@@ -24,6 +24,10 @@ from typing import Any, Callable, ClassVar, Optional
 log = logging.getLogger("adapters.base")
 
 ProcHook = Optional[Callable[[subprocess.Popen], None]]
+EVENT_MODE_FULL = "full"
+STREAM_EVENT_NATIVE = "native"
+NATIVE_EVENT_KEY = "event"
+NATIVE_LINE_KEY = "line"
 
 
 @dataclass
@@ -92,11 +96,36 @@ class StreamEvent:
       ``stop``     — terminal event. ``data["reason"]`` is the finish reason.
       ``error``    — non-fatal parse / runtime warning. ``text`` carries msg.
       ``raw``      — unparsed line (debug). Modes typically ignore.
+      ``native``   — untouched provider stdout record. ``data`` holds either
+                     an ``event`` object or a non-JSON ``line`` record.
     """
 
     type: str
     text: str = ""
     data: dict | None = None
+
+
+def parse_native_event_lines(stdout: str) -> list[dict[str, Any]]:
+    """Retain every non-empty provider stdout line in a stable event shape.
+
+    JSON object lines stay untouched for callers that know the provider's
+    event schema. Diagnostics, malformed JSON, and JSON values that are not
+    objects remain available as line records instead of silently disappearing.
+    """
+    events: list[dict[str, Any]] = []
+    for line in stdout.splitlines():
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            events.append({NATIVE_LINE_KEY: line})
+            continue
+        if isinstance(event, dict):
+            events.append(event)
+            continue
+        events.append({NATIVE_LINE_KEY: line})
+    return events
 
 
 _FENCE_RE = re.compile(r"^\s*```(?:json)?\s*\n?|\n?```\s*$", re.IGNORECASE)
@@ -347,23 +376,17 @@ class AgentAdapter:
         result.parsed = value
         result.parse_error = err
 
-    # ── event log (post-hoc parse of completed stdout) ───────────────────────
+    # Legacy event hook
 
     def parse_events(
         self, stdout: str, req: RunRequest,
     ) -> list[dict[str, Any]]:
-        """Extract structured events from a completed run's stdout.
+        """Legacy compatibility hook.
 
-        Returned by ``/run`` as the ``events`` field whenever the list is
-        non-empty — gives clients structured access to tool calls / thinking
-        blocks / per-turn metadata without forcing them to opt into raw
-        stdout. Default: empty list (plain-text adapters have no events).
-
-        Adapters whose binaries emit a structured stream (pi's
-        ``--output-format=json-verbose`` for example) override this to JSON-
-        decode each line and return the parsed objects. Lines that fail to
-        decode are dropped silently — events is a best-effort surface, not
-        the canonical transcript (use ``includeRaw`` if you need the bytes).
+        The runner no longer calls this hook. ``eventMode: full`` preserves
+        every non-empty stdout line itself, without adapter filtering or
+        truncation. Existing adapters may keep an override until the next
+        adapter-contract major version.
         """
         del stdout, req
         return []

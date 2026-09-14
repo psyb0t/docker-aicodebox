@@ -609,6 +609,220 @@ def test_stream_plumbs_runspec_headers(client, monkeypatch):
     assert spec.resume == "sess-xyz"
 
 
+def _read_sse_events(body: str) -> list[tuple[str, dict | str]]:
+    events: list[tuple[str, dict | str]] = []
+    for block in body.split("\n\n"):
+        if not block:
+            continue
+        name = "message"
+        data = ""
+        for line in block.splitlines():
+            if line.startswith("event: "):
+                name = line.removeprefix("event: ")
+            elif line.startswith("data: "):
+                data = line.removeprefix("data: ")
+        if data == "[DONE]":
+            events.append((name, data))
+        elif data:
+            events.append((name, json.loads(data)))
+    return events
+
+
+def test_stream_opt_in_emits_native_events_without_polluting_content(
+    client, monkeypatch,
+):
+    from aicodebox.adapters.base import StreamEvent
+    from aicodebox.modes.api import oai as oai_mod
+    from aicodebox.shared import runner as runner_mod
+
+    captured_specs: list = []
+
+    async def fake_stream(spec):
+        captured_specs.append(spec)
+        yield StreamEvent(type="native", data={
+            "event": {"type": "thinking_delta", "text": "private trace"},
+        })
+        yield StreamEvent(type="delta", text="visible reply")
+        yield StreamEvent(type="native", data={"line": "provider diagnostic"})
+        yield StreamEvent(type="stop", data={"reason": "stop"})
+
+    monkeypatch.setattr(runner_mod, "run_stream", fake_stream)
+    monkeypatch.setattr(oai_mod, "run_stream", fake_stream)
+
+    response = client.post(
+        "/openai/v1/chat/completions",
+        json={
+            "model": "m1",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": True,
+            "stream_options": {"include_aicodebox_events": True},
+        },
+    )
+
+    assert response.status_code == 200
+    assert len(captured_specs) == 1
+    assert captured_specs[0].event_mode == "full"
+
+    events = _read_sse_events(response.text)
+    native = [data for name, data in events if name == "aicodebox.native"]
+    assert native == [
+        {
+            "sequence": 1,
+            "attempt": 0,
+            "backend": "oai-test",
+            "eventType": "thinking_delta",
+            "event": {"type": "thinking_delta", "text": "private trace"},
+        },
+        {
+            "sequence": 2,
+            "attempt": 0,
+            "backend": "oai-test",
+            "eventType": "raw_stdout",
+            "event": {"line": "provider diagnostic"},
+        },
+    ]
+
+    chunks = [
+        data for name, data in events
+        if name == "message" and isinstance(data, dict)
+    ]
+    content = [
+        choice["delta"].get("content")
+        for chunk in chunks
+        for choice in chunk["choices"]
+        if choice["delta"].get("content")
+    ]
+    assert content == ["visible reply"]
+
+
+def test_buffered_stream_replays_complete_native_event_history(
+    client, monkeypatch,
+):
+    _patch_runner_sequence(monkeypatch, [RunResult(
+        text='{"ok": true}',
+        raw_stdout='{"ok": true}',
+        raw_stderr="",
+        exit_code=0,
+        events=[
+            {"type": "thinking_delta", "text": "reasoning"},
+            {"line": "provider diagnostic"},
+        ],
+    )])
+
+    response = client.post(
+        "/openai/v1/chat/completions",
+        json={
+            "model": "m1",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": True,
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "response",
+                    "schema": {"type": "object"},
+                },
+            },
+            "stream_options": {"include_aicodebox_events": True},
+        },
+    )
+
+    assert response.status_code == 200
+    events = _read_sse_events(response.text)
+    native = [data for name, data in events if name == "aicodebox.native"]
+    assert native == [
+        {
+            "sequence": 1,
+            "attempt": 0,
+            "backend": "oai-test",
+            "eventType": "thinking_delta",
+            "event": {"type": "thinking_delta", "text": "reasoning"},
+        },
+        {
+            "sequence": 2,
+            "attempt": 0,
+            "backend": "oai-test",
+            "eventType": "raw_stdout",
+            "event": {"line": "provider diagnostic"},
+        },
+    ]
+    assert events.index(("aicodebox.native", native[0])) < next(
+        index for index, event in enumerate(events)
+        if event[0] == "message" and isinstance(event[1], dict)
+    )
+
+
+@pytest.mark.parametrize(
+    ("stream_options", "expected_mode", "expect_native"),
+    [
+        (None, "none", False),
+        ({}, "none", False),
+        ({"include_aicodebox_events": False}, "none", False),
+    ],
+)
+def test_stream_native_events_stay_opt_in(
+    client, monkeypatch, stream_options, expected_mode, expect_native,
+):
+    from aicodebox.adapters.base import StreamEvent
+    from aicodebox.modes.api import oai as oai_mod
+    from aicodebox.shared import runner as runner_mod
+
+    captured_specs: list = []
+
+    async def fake_stream(spec):
+        captured_specs.append(spec)
+        yield StreamEvent(type="native", data={"event": {"type": "tool_use"}})
+        yield StreamEvent(type="delta", text="visible reply")
+        yield StreamEvent(type="stop", data={"reason": "stop"})
+
+    monkeypatch.setattr(runner_mod, "run_stream", fake_stream)
+    monkeypatch.setattr(oai_mod, "run_stream", fake_stream)
+    body = {
+        "model": "m1",
+        "messages": [{"role": "user", "content": "hi"}],
+        "stream": True,
+    }
+    if stream_options is not None:
+        body["stream_options"] = stream_options
+    response = client.post("/openai/v1/chat/completions", json=body)
+
+    assert response.status_code == 200
+    assert captured_specs[0].event_mode == expected_mode
+    names = [name for name, _ in _read_sse_events(response.text)]
+    assert ("aicodebox.native" in names) is expect_native
+
+
+@pytest.mark.parametrize("invalid_options", [
+    {"include_aicodebox_events": "yes"},
+    {"include_aicodebox_events": 1},
+    {"include_aicodebox_events": None},
+])
+def test_stream_rejects_non_boolean_native_event_option(
+    client, monkeypatch, invalid_options,
+):
+    from aicodebox.modes.api import oai as oai_mod
+
+    async def should_not_run(spec):
+        del spec
+        raise AssertionError("invalid stream options must not start the agent")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(oai_mod, "run_stream", should_not_run)
+    response = client.post(
+        "/openai/v1/chat/completions",
+        json={
+            "model": "m1",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": True,
+            "stream_options": invalid_options,
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == (
+        "stream_options.include_aicodebox_events must be a boolean"
+    )
+
+
 # ── ephemeral workspace + session-continuation retry ────────────────────────
 
 

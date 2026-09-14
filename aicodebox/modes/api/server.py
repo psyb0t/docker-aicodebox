@@ -20,7 +20,7 @@ from typing import Any, Literal
 from fastapi import Depends, FastAPI, HTTPException, Path, Query
 from pydantic import BaseModel, Field
 
-from aicodebox.adapters import get_adapter
+from aicodebox.adapters import NATIVE_LINE_KEY, get_adapter
 from aicodebox.modes.api.auth import check_bearer
 from aicodebox.modes.api.files import router as files_router
 from aicodebox.modes.api.oai import (
@@ -41,6 +41,7 @@ from aicodebox.shared.runner import (
 log = logging.getLogger("api")
 
 PURGE_INTERVAL_SECONDS = 600
+NATIVE_EVENT_TYPE_RAW_STDOUT = "raw_stdout"
 
 
 _mcp_lifespan_cm: Any = None
@@ -205,7 +206,12 @@ def _event_envelopes(result: Any, backend: str) -> list[dict[str, Any]]:
     for attempt, events in enumerate(event_attempts):
         for event in events:
             sequence += 1
-            event_type = event.get("type") if isinstance(event, dict) else None
+            if isinstance(event, dict) and NATIVE_LINE_KEY in event:
+                event_type = NATIVE_EVENT_TYPE_RAW_STDOUT
+            elif isinstance(event, dict):
+                event_type = event.get("type")
+            else:
+                event_type = None
             envelopes.append({
                 "sequence": sequence,
                 "attempt": attempt,

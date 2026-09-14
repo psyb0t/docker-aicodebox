@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import subprocess
 import sys
 
@@ -44,13 +45,6 @@ class _EchoAdapter(adapter_base.AgentAdapter):
         script = "printf 'line one\\nline two\\nline three\\n'"
         return [self.binary, "-c", script]
 
-    def parse_events(self, stdout, req):
-        del req
-        return [
-            {"type": "native", "line": line}
-            for line in stdout.splitlines()
-        ]
-
 
 class _FailAdapter(adapter_base.AgentAdapter):
     """Spawns /bin/sh which writes to stderr then exits 3."""
@@ -61,6 +55,36 @@ class _FailAdapter(adapter_base.AgentAdapter):
     def build_argv(self, req):
         del req
         return [self.binary, "-c", "echo boom >&2; exit 3"]
+
+
+class _JSONAndPlainStreamAdapter(adapter_base.AgentAdapter):
+    """Emit a provider record and a diagnostic line from a real subprocess."""
+
+    name = "json-and-plain"
+    binary = "/bin/sh"
+
+    def build_argv(self, req):
+        del req
+        return [
+            self.binary,
+            "-c",
+            "printf '%s\\n%s\\n%s\\n' "
+            "'{\"type\":\"assistant\",\"text\":\"visible\"}' "
+            "'[\"not-an-event\"]' "
+            "'provider diagnostic'",
+        ]
+
+    def parse_stream_event(self, line, req):
+        del req
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(event, dict):
+            return None
+        if event.get("type") == "assistant":
+            return StreamEvent(type="delta", text=event["text"])
+        return None
 
 
 @pytest.fixture
@@ -91,6 +115,20 @@ def fail_adapter(monkeypatch):
     adapter_base.reset_adapter_cache()
 
 
+@pytest.fixture
+def json_and_plain_adapter(monkeypatch):
+    monkeypatch.setitem(
+        sys.modules, "aicodebox.tests._json_and_plain", sys.modules[__name__],
+    )
+    monkeypatch.setenv(
+        "AICODEBOX_ADAPTER",
+        "aicodebox.tests.test_runner_stream:_JSONAndPlainStreamAdapter",
+    )
+    adapter_base.reset_adapter_cache()
+    yield _JSONAndPlainStreamAdapter()
+    adapter_base.reset_adapter_cache()
+
+
 async def _collect(spec: RunSpec) -> list[StreamEvent]:
     return [event async for event in run_stream(spec)]
 
@@ -105,6 +143,25 @@ async def test_run_stream_emits_delta_per_line_then_stop(echo_adapter, tmp_path)
 
     assert events[-1].type == "stop"
     assert events[-1].data == {"reason": "stop"}
+
+
+@pytest.mark.asyncio
+async def test_run_stream_full_mode_keeps_json_and_plain_native_lines(
+    json_and_plain_adapter, tmp_path,
+):
+    events = await _collect(RunSpec(
+        prompt="", workspace=str(tmp_path), event_mode="full",
+    ))
+
+    assert [event.data for event in events if event.type == "native"] == [
+        {"event": {"type": "assistant", "text": "visible"}},
+        {"line": "[\"not-an-event\"]"},
+        {"line": "provider diagnostic"},
+    ]
+    assert [event.text for event in events if event.type == "delta"] == [
+        "visible",
+    ]
+    assert events[-1].type == "stop"
 
 
 @pytest.mark.asyncio
