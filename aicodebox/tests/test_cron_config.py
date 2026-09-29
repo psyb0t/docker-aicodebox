@@ -53,6 +53,28 @@ jobs:
     assert b.telegram_chat_id == 100
 
 
+def test_load_allows_job_to_disable_root_telegram_notification(tmp_path):
+    p = _write(
+        tmp_path,
+        """
+telegram_chat_id: 100
+jobs:
+  - name: notify
+    schedule: "*/1 * * * * *"
+    instruction: send this
+  - name: silent
+    schedule: "*/1 * * * * *"
+    instruction: do not send this
+    telegram_chat_id: 0
+""",
+    )
+
+    cfg = config.load(p)
+
+    assert cfg.jobs[0].telegram_chat_id == 100
+    assert cfg.jobs[1].telegram_chat_id == 0
+
+
 def test_load_rejects_duplicate_name(tmp_path):
     p = _write(
         tmp_path,

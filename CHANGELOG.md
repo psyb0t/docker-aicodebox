@@ -4,6 +4,14 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking REST changes (called
 out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.16.1, 2026-09-29
+
+Corrects the MCP and cron operational contracts.
+
+- API-mounted MCP now has `/mcp/` as its canonical endpoint, while slashless `/mcp` reaches the same handler without a redirect. Standalone MCP serves at the port root.
+- MCP keeps DNS rebinding protection enabled. Reverse-proxy deployments can allow exact `Host` and browser `Origin` values with `AICODEBOX_MCP_MODE_ALLOWED_HOSTS` and `AICODEBOX_MCP_MODE_ALLOWED_ORIGINS`.
+- `AICODEBOX_CRON_MODE_HISTORY_DIR` now controls all cron state, including run artifacts, job summaries, and Telegram reply metadata. A cron job can set `telegram_chat_id: 0` to opt out of a root notification default. Successful jobs with an explicitly configured recipient now notify Telegram even when their result text is empty.
+
 ## v0.16.0, 2026-09-14
 
 Adds opt-in native provider records to OpenAI-compatible streaming.

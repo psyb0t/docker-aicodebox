@@ -39,6 +39,8 @@ env (mode config):
   AICODEBOX_CRON_MODE_FILE=path   yaml file for cron mode
   AICODEBOX_MCP_MODE_PORT=8081    port for standalone MCP server
   AICODEBOX_MCP_MODE_TOKEN=...    bearer token for MCP (no fallback)
+  AICODEBOX_MCP_MODE_ALLOWED_HOSTS=...    comma-separated MCP Host allowlist
+  AICODEBOX_MCP_MODE_ALLOWED_ORIGINS=...  comma-separated MCP Origin allowlist
 
 env (adapter):
   AICODEBOX_ADAPTER               pkg.module:Class for the active agent
@@ -160,6 +162,8 @@ for var in AICODEBOX_ADAPTER AICODEBOX_AGENT_BINARY AICODEBOX_WORKSPACE \
            AICODEBOX_TELEGRAM_MODE_CONFIG AICODEBOX_TELEGRAM_MODE_OVERRIDES \
            AICODEBOX_CRON_MODE AICODEBOX_CRON_MODE_FILE AICODEBOX_CRON_MODE_HISTORY_DIR \
            AICODEBOX_MCP_MODE AICODEBOX_MCP_MODE_PORT AICODEBOX_MCP_MODE_TOKEN \
+           AICODEBOX_MCP_MODE_ALLOWED_HOSTS \
+           AICODEBOX_MCP_MODE_ALLOWED_ORIGINS \
            TELEGRAM_CHAT_ID DEBUG; do
     val="$(printenv "$var" 2>/dev/null || true)"
     if [ -n "$val" ]; then

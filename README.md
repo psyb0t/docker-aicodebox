@@ -109,7 +109,7 @@ The package gets resolved at first call, cached for the process lifetime. Every 
 
 ## Modes
 
-Modes are controlled by env vars. Set the flag, the entrypoint starts that mode. No flag, no mode. **Foreground modes** (API / Telegram / Cron) are mutually exclusive — except telegram + cron, which share a process (cron runs in-thread inside telegram). API wins if set alongside anything else. **MCP mode** is independent — it coexists with any foreground mode, served on its own port (or mounted at `/mcp` inside API).
+Modes are controlled by env vars. Set the flag, the entrypoint starts that mode. No flag, no mode. **Foreground modes** (API / Telegram / Cron) are mutually exclusive — except telegram + cron, which share a process (cron runs in-thread inside telegram). API wins if set alongside anything else. **MCP mode** is independent — it coexists with any foreground mode, served on its own port (or mounted at `/mcp/` inside API).
 
 ### API mode
 
@@ -147,7 +147,7 @@ Modes are controlled by env vars. Set the flag, the entrypoint starts that mode.
   eventType, event}` before the ordinary OpenAI chunks. Normal content chunks
   and `[DONE]` stay unchanged. The option requires `stream: true`.
 - `GET /openai/v1/models` — model list from the adapter
-- `POST /mcp` — MCP server (mounted only when `AICODEBOX_MCP_MODE=1`; auth via `AICODEBOX_MCP_MODE_TOKEN`, separate from the API bearer)
+- `POST /mcp/` — MCP server (mounted only when `AICODEBOX_MCP_MODE=1`; auth via `AICODEBOX_MCP_MODE_TOKEN`, separate from the API bearer)
 
 Bearer auth for the API surface: `AICODEBOX_API_MODE_TOKEN=<one-token>`. Single token, no rotation list. Empty = no auth.
 
@@ -178,7 +178,7 @@ chats:
 
 ### Cron mode
 
-`AICODEBOX_CRON_MODE=1` + `AICODEBOX_CRON_MODE_FILE=/path/to/cron.yaml`. 6-field croniter schedules, per-job workspace, optional telegram notification.
+`AICODEBOX_CRON_MODE=1` + `AICODEBOX_CRON_MODE_FILE=/path/to/cron.yaml`. It accepts five field schedules for minute resolution and six field schedules for second resolution. Jobs can select safe relative workspace directories and optionally notify Telegram.
 
 ```yaml
 jobs:
@@ -191,7 +191,7 @@ jobs:
     model: claude-sonnet
 ```
 
-Each run gets its own history dir under `$HOME/.aicodebox/cron/history/<workspace-slug>/<YYYYmmdd-HHMMSS>-<job>/` with `meta.json`, `stdout.log`, `stderr.log`, `result.txt`, and (if telegram-notified) `telegram.json`. The next run's prompt gets a "prior runs" hint pointing at that directory — your agent can read its own past output without you wiring it up.
+Each run gets its own history directory under `$HOME/.aicodebox/cron/history/<workspace-slug>/<YYYYMMDD-HHMMSS>-<job>/` with `meta.json`, `stdout.log`, `stderr.log`, `result.txt`, and `telegram.json` when notified. The scheduler also appends a summary to `$HOME/.aicodebox/cron/<job>.jsonl`. Set `AICODEBOX_CRON_MODE_HISTORY_DIR` to move the whole cron state root, including the Telegram reply metadata.
 
 ### MCP mode
 
@@ -199,12 +199,14 @@ Each run gets its own history dir under `$HOME/.aicodebox/cron/history/<workspac
 
 | Foreground | MCP placement |
 |---|---|
-| API mode (`AICODEBOX_API_MODE=1`) | mounted at `/mcp` on the API port — no extra process |
-| Telegram / Cron / passthrough | runs as a sidecar uvicorn on `AICODEBOX_MCP_MODE_PORT` (default `8081`) |
+| API mode (`AICODEBOX_API_MODE=1`) | mounted at `/mcp/` on the API port — no extra process |
+| Telegram / Cron / passthrough | runs as a sidecar uvicorn at `/` on `AICODEBOX_MCP_MODE_PORT` (default `8081`) |
 
 Auth: `AICODEBOX_MCP_MODE_TOKEN=<one-token>` — bearer token in the `Authorization: Bearer …` header, or `?apiToken=…` for clients that can't set headers. Empty = no auth. **No fallback to `API_MODE_TOKEN`** — MCP is its own surface with its own bearer.
 
-Point Claude Desktop / Cursor / whatever at the MCP endpoint and the agent shows up as a set of tools (`run_prompt`, `list_files`, `read_file`, `write_file`, `delete_file`).
+Point Claude Desktop / Cursor / whatever at `http://host:8080/mcp/` in API mode or `http://host:8081/` in standalone mode. The agent shows up as a set of tools (`run_prompt`, `list_files`, `read_file`, `write_file`, `delete_file`).
+
+MCP keeps DNS rebinding protection enabled. Loopback hosts and origins work by default. A reverse proxy, tunnel, or public DNS name must set `AICODEBOX_MCP_MODE_ALLOWED_HOSTS` to the exact `Host` values it forwards and `AICODEBOX_MCP_MODE_ALLOWED_ORIGINS` to exact browser origins, including their schemes. Do not disable this protection or use broad wildcards for an internet-facing endpoint.
 
 ## Configuration
 
@@ -230,7 +232,7 @@ Env var convention: `<MODE>_MODE` is the on/off flag for that mode; `<MODE>_MODE
 | `AICODEBOX_API_MODE` | `0` | Boot the HTTP API server (foreground) |
 | `AICODEBOX_TELEGRAM_MODE` | `0` | Boot the Telegram bot (foreground) |
 | `AICODEBOX_CRON_MODE` | `0` | Boot the cron scheduler (foreground; runs in-thread if telegram is also on) |
-| `AICODEBOX_MCP_MODE` | `0` | Expose the MCP server — mounted at `/mcp` in API mode, or as a sidecar elsewhere |
+| `AICODEBOX_MCP_MODE` | `0` | Expose the MCP server — mounted at `/mcp/` in API mode, or as a sidecar elsewhere |
 
 ### API mode config
 
@@ -252,7 +254,7 @@ Env var convention: `<MODE>_MODE` is the on/off flag for that mode; `<MODE>_MODE
 | Var | Default | What it does |
 |-----|---------|--------------|
 | `AICODEBOX_CRON_MODE_FILE` | — | Path to the cron yaml |
-| `AICODEBOX_CRON_MODE_HISTORY_DIR` | `$HOME/.aicodebox/cron/history` | Where each run writes `meta.json`, `stdout.log`, `stderr.log`, `result.txt` |
+| `AICODEBOX_CRON_MODE_HISTORY_DIR` | `$HOME/.aicodebox/cron` | Cron state root for run artifacts, job summaries, and Telegram reply metadata |
 
 ### MCP mode config
 
@@ -260,6 +262,8 @@ Env var convention: `<MODE>_MODE` is the on/off flag for that mode; `<MODE>_MODE
 |-----|---------|--------------|
 | `AICODEBOX_MCP_MODE_PORT` | `8081` | Port the sidecar MCP server binds to (ignored when MCP is mounted inside API) |
 | `AICODEBOX_MCP_MODE_TOKEN` | empty | Bearer token for MCP. Empty = no auth. **No fallback to `API_MODE_TOKEN`** |
+| `AICODEBOX_MCP_MODE_ALLOWED_HOSTS` | loopback hosts | Comma-separated `Host` values accepted by MCP. Add each reverse-proxy host name. |
+| `AICODEBOX_MCP_MODE_ALLOWED_ORIGINS` | loopback HTTP origins | Comma-separated browser origins accepted by MCP. Add each proxy origin that sends browser requests. |
 
 ## Child image recipe
 

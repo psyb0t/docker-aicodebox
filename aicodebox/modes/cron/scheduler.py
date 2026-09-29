@@ -2,7 +2,8 @@
 
 History layout
 --------------
-Each run gets a dedicated directory:
+Each run gets a dedicated directory under ``AICODEBOX_CRON_MODE_HISTORY_DIR``
+when configured, otherwise under ``~/.aicodebox/cron``:
 
     ~/.aicodebox/cron/history/<workspace_slug>/<YYYYmmdd-HHMMSS>-<job>/
         meta.json       — job metadata + exit code + timings
@@ -47,7 +48,16 @@ from aicodebox.shared.runner import run as run_agent
 log = logging.getLogger("cron")
 
 _HOME = Path(os.environ.get("HOME", "/home/aicode"))
-HISTORY_ROOT = _HOME / ".aicodebox" / "cron"
+
+
+def _history_root_from_environment() -> Path:
+    configured_root = os.environ.get("AICODEBOX_CRON_MODE_HISTORY_DIR")
+    if configured_root:
+        return Path(configured_root)
+    return _HOME / ".aicodebox" / "cron"
+
+
+HISTORY_ROOT = _history_root_from_environment()
 HISTORY_RUNS_ROOT = HISTORY_ROOT / "history"
 TELEGRAM_MESSAGES_FILE = HISTORY_ROOT / "telegram_messages.json"
 TELEGRAM_MESSAGES_CAP = 200
@@ -361,7 +371,7 @@ def _run_job(job: CronJob, fired_at: datetime) -> None:
             stderr_text[:200],
         )
 
-    if result_text or exit_code != 0:
+    if job.telegram_chat_id:
         _notify_telegram(job, fired_at, result_text, exit_code, job_dir)
 
 

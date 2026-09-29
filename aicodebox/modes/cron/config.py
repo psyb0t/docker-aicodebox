@@ -141,10 +141,14 @@ def load(path: str | Path) -> CronConfig:
             )
             or defaults["append_system_prompt"],
             no_continue=no_continue,
-            telegram_chat_id=_int_or_none(
-                j.get("telegram_chat_id"), f"job '{name}': telegram_chat_id"
-            )
-            or defaults["telegram_chat_id"],
+            telegram_chat_id=(
+                _int_or_none(
+                    j.get("telegram_chat_id"),
+                    f"job '{name}': telegram_chat_id",
+                )
+                if "telegram_chat_id" in j
+                else defaults["telegram_chat_id"]
+            ),
             effort=_str_or_none(j.get("effort"), f"job '{name}': effort")
             or defaults["effort"],
             thinking=_str_or_none(j.get("thinking"), f"job '{name}': thinking")

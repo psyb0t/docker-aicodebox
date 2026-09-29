@@ -42,6 +42,8 @@ log = logging.getLogger("api")
 
 PURGE_INTERVAL_SECONDS = 600
 NATIVE_EVENT_TYPE_RAW_STDOUT = "raw_stdout"
+MCP_MOUNT_PATH = "/mcp"
+MCP_MOUNT_PATH_WITH_SLASH = f"{MCP_MOUNT_PATH}/"
 
 
 _mcp_lifespan_cm: Any = None
@@ -83,7 +85,27 @@ async def _purge_loop() -> None:
         await asyncio.sleep(PURGE_INTERVAL_SECONDS)
 
 
+class _MCPSlashNormalizer:
+    """Route the canonical and slashless API-mounted MCP paths identically."""
+
+    def __init__(self, app: Any) -> None:
+        self._app = app
+
+    async def __call__(
+        self,
+        scope: dict[str, Any],
+        receive: Any,
+        send: Any,
+    ) -> None:
+        if scope["type"] == "http" and scope.get("path") == MCP_MOUNT_PATH:
+            scope = dict(scope)
+            scope["path"] = MCP_MOUNT_PATH_WITH_SLASH
+            scope["raw_path"] = MCP_MOUNT_PATH_WITH_SLASH.encode()
+        await self._app(scope, receive, send)
+
+
 app = FastAPI(lifespan=_lifespan)
+app.add_middleware(_MCPSlashNormalizer)
 app.include_router(files_router)
 app.include_router(oai_router)
 
@@ -100,11 +122,11 @@ def _maybe_mount_mcp() -> None:
         from aicodebox.modes.api.mcp_server import MCPWithAuth, build_mcp_app
         mcp_app = build_mcp_app()
     except Exception:  # noqa: BLE001
-        log.exception("mcp: failed to build MCP app — /mcp not mounted")
+        log.exception("mcp: failed to build MCP app. MCP endpoint not mounted")
         return
-    app.mount("/mcp", MCPWithAuth(mcp_app))
+    app.mount(MCP_MOUNT_PATH, MCPWithAuth(mcp_app))
     _mcp_lifespan_cm = mcp_app.router.lifespan_context(mcp_app)
-    log.info("mcp: mounted /mcp")
+    log.info("mcp: mounted /mcp/")
 
 
 _maybe_mount_mcp()

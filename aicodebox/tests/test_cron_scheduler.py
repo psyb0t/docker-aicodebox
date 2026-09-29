@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -11,6 +12,23 @@ import pytest
 
 from aicodebox.modes.cron import scheduler
 from aicodebox.modes.cron.config import CronJob
+
+
+def test_scheduler_loads_configured_history_root(monkeypatch, tmp_path):
+    history_root = tmp_path / "cron-state"
+    monkeypatch.setenv("AICODEBOX_CRON_MODE_HISTORY_DIR", str(history_root))
+    reloaded_scheduler = importlib.reload(scheduler)
+
+    try:
+        assert reloaded_scheduler.HISTORY_ROOT == history_root
+        assert reloaded_scheduler.HISTORY_RUNS_ROOT == history_root / "history"
+        assert (
+            reloaded_scheduler.TELEGRAM_MESSAGES_FILE
+            == history_root / "telegram_messages.json"
+        )
+    finally:
+        monkeypatch.delenv("AICODEBOX_CRON_MODE_HISTORY_DIR")
+        importlib.reload(reloaded_scheduler)
 
 
 def test_slugify_replaces_punctuation():
@@ -134,7 +152,11 @@ def test_record_telegram_message_atomic(monkeypatch, tmp_path):
 
 def test_run_job_writes_full_artefacts(monkeypatch, tmp_path, tmp_workspace):
     monkeypatch.setattr(scheduler, "HISTORY_ROOT", tmp_path / "cron")
-    monkeypatch.setattr(scheduler, "HISTORY_RUNS_ROOT", tmp_path / "cron" / "history")
+    monkeypatch.setattr(
+        scheduler,
+        "HISTORY_RUNS_ROOT",
+        tmp_path / "cron" / "history",
+    )
 
     job = CronJob(
         name="ping",
@@ -173,7 +195,11 @@ def test_run_job_writes_full_artefacts(monkeypatch, tmp_path, tmp_workspace):
 
 def test_run_job_records_workspace_error(monkeypatch, tmp_path, tmp_workspace):
     monkeypatch.setattr(scheduler, "HISTORY_ROOT", tmp_path / "cron")
-    monkeypatch.setattr(scheduler, "HISTORY_RUNS_ROOT", tmp_path / "cron" / "history")
+    monkeypatch.setattr(
+        scheduler,
+        "HISTORY_RUNS_ROOT",
+        tmp_path / "cron" / "history",
+    )
     job = CronJob(
         name="bad",
         schedule="*/1 * * * * *",
@@ -194,7 +220,11 @@ def test_run_job_history_hint_injected_into_append_system_prompt(
     tmp_workspace,
 ):
     monkeypatch.setattr(scheduler, "HISTORY_ROOT", tmp_path / "cron")
-    monkeypatch.setattr(scheduler, "HISTORY_RUNS_ROOT", tmp_path / "cron" / "history")
+    monkeypatch.setattr(
+        scheduler,
+        "HISTORY_RUNS_ROOT",
+        tmp_path / "cron" / "history",
+    )
     workspace_slug = scheduler._slugify(str(tmp_workspace.resolve()))
     parent = tmp_path / "cron" / "history" / workspace_slug
     parent.mkdir(parents=True)
@@ -258,3 +288,41 @@ def test_notify_telegram_records_history_dir(monkeypatch, tmp_path):
     inbox = json.loads((tmp_path / "tm.json").read_text())
     assert inbox["7777"]["history_dir"] == str(job_dir)
     assert inbox["7777"]["chat_id"] == 42
+
+
+def test_run_job_notifies_for_empty_successful_result(
+    monkeypatch, tmp_path, tmp_workspace
+):
+    monkeypatch.setattr(scheduler, "HISTORY_ROOT", tmp_path / "cron")
+    monkeypatch.setattr(
+        scheduler,
+        "HISTORY_RUNS_ROOT",
+        tmp_path / "cron" / "history",
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "run_agent",
+        lambda _spec: type(
+            "Result",
+            (),
+            {"text": "", "raw_stdout": "", "raw_stderr": "", "exit_code": 0},
+        )(),
+    )
+    notifications: list[tuple[CronJob, str, int]] = []
+    monkeypatch.setattr(
+        scheduler,
+        "_notify_telegram",
+        lambda job, _fired_at, text, exit_code, _job_dir: notifications.append(
+            (job, text, exit_code)
+        ),
+    )
+    job = CronJob(
+        name="empty",
+        schedule="*/1 * * * * *",
+        instruction="i",
+        telegram_chat_id=42,
+    )
+
+    scheduler._run_job(job, datetime(2026, 1, 1, tzinfo=timezone.utc))
+
+    assert notifications == [(job, "", 0)]

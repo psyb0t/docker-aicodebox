@@ -1,4 +1,4 @@
-"""MCP server exposed via streamable-http at /mcp.
+"""MCP server exposed via streamable HTTP at /mcp/ when API-mounted.
 
 Tools:
   - run_prompt(prompt, ...) → invoke the active agent, return its text
@@ -25,10 +25,58 @@ from aicodebox.shared.runner import RunSpec, run as run_agent
 log = logging.getLogger("api.mcp")
 
 _TOKEN_ENV = "AICODEBOX_MCP_MODE_TOKEN"
+_ALLOWED_HOSTS_ENV = "AICODEBOX_MCP_MODE_ALLOWED_HOSTS"
+_ALLOWED_ORIGINS_ENV = "AICODEBOX_MCP_MODE_ALLOWED_ORIGINS"
+_DEFAULT_ALLOWED_HOSTS = (
+    "127.0.0.1",
+    "127.0.0.1:*",
+    "localhost",
+    "localhost:*",
+    "[::1]",
+    "[::1]:*",
+)
+_DEFAULT_ALLOWED_ORIGINS = (
+    "http://127.0.0.1:*",
+    "http://localhost:*",
+    "http://[::1]:*",
+)
 
 
 def mcp_token() -> str:
     return os.environ.get(_TOKEN_ENV, "") or ""
+
+
+def _allowlist_from_environment(
+    name: str,
+    default: tuple[str, ...],
+) -> list[str]:
+    configured = os.environ.get(name)
+    if configured is None:
+        return list(default)
+    values = [
+        value.strip()
+        for value in configured.split(",")
+        if value.strip()
+    ]
+    if not values:
+        raise ValueError(f"{name} must contain at least one value")
+    return values
+
+
+def _transport_security() -> Any:
+    from mcp.server.transport_security import TransportSecuritySettings
+
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=_allowlist_from_environment(
+            _ALLOWED_HOSTS_ENV,
+            _DEFAULT_ALLOWED_HOSTS,
+        ),
+        allowed_origins=_allowlist_from_environment(
+            _ALLOWED_ORIGINS_ENV,
+            _DEFAULT_ALLOWED_ORIGINS,
+        ),
+    )
 
 
 def _resolve_path(path: str) -> str:
@@ -50,7 +98,11 @@ def build_mcp_app() -> Any:
     doesn't pay the import cost / dep cost when MCP is disabled."""
     from mcp.server.fastmcp import FastMCP
 
-    mcp = FastMCP("aicodebox", streamable_http_path="/")
+    mcp = FastMCP(
+        "aicodebox",
+        streamable_http_path="/",
+        transport_security=_transport_security(),
+    )
 
     @mcp.tool()
     async def run_prompt(
