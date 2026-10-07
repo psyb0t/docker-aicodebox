@@ -4,8 +4,9 @@
 # Responsibilities:
 #  1. UID/GID rematch against the mounted workspace
 #  2. Docker socket GID fix
-#  3. Run any first-run init scripts dropped by the child image
-#     into /aicodebox-init.d/ (run once, marker in $HOME/.aicodebox/.init-done)
+#  3. Once per container, run the child image's /aicodebox-init.d/*.sh, then
+#     the user's $HOME/.aicodebox/init.d/*.sh (marker in the container
+#     filesystem at /var/lib/aicodebox/init-done)
 #  4. Load persisted auth env vars
 #  5. Dispatch to a mode (api/telegram/cron) or fall through to the agent's
 #     interactive/passthrough CLI via the configured adapter
@@ -84,19 +85,37 @@ if [ -S /var/run/docker.sock ]; then
 fi
 
 # ── 3. first-run init.d ───────────────────────────────────────────────────────
-INIT_DIR="/aicodebox-init.d"
-INIT_MARKER="/home/aicode/.aicodebox/.init-done"
-if [ -d "$INIT_DIR" ] && [ ! -f "$INIT_MARKER" ]; then
-    AICODE_STATE_DIR="$(dirname "$INIT_MARKER")"
-    mkdir -p "$AICODE_STATE_DIR"
-    chown aicode:aicode "$AICODE_STATE_DIR"
-    for script in "$INIT_DIR"/*.sh; do
+# The child image's scripts run first, then the user's from the state dir.
+# The marker lives in the container filesystem rather than under
+# $HOME/.aicodebox: child images bind-mount that directory from the host, and
+# a marker on the mount made every container after the first skip init.
+readonly AICODE_STATE_DIR="/home/aicode/.aicodebox"
+readonly IMAGE_INIT_DIR="/aicodebox-init.d"
+readonly USER_INIT_DIR="${AICODE_STATE_DIR}/init.d"
+readonly USER_BIN_DIR="${AICODE_STATE_DIR}/bin"
+readonly INIT_MARKER="/var/lib/aicodebox/init-done"
+readonly AICODE_PATH="${USER_BIN_DIR}:/home/aicode/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+# sudo resets PATH to secure_path, so pass the runtime PATH explicitly.
+run_init_scripts() {
+    local dir="$1"
+    local script
+    [ -d "$dir" ] || return 0
+    for script in "$dir"/*.sh; do
         [ -f "$script" ] || continue
         dbg "running init script: $script"
-        sudo -E -u aicode -H bash "$script" || echo "[entrypoint] init script $script failed" >&2
+        if ! sudo -E -u aicode -H env "PATH=$AICODE_PATH" bash "$script"; then
+            echo "[entrypoint] init script $script failed" >&2
+        fi
     done
+}
+
+if [ ! -f "$INIT_MARKER" ]; then
+    mkdir -p "$AICODE_STATE_DIR" "$(dirname "$INIT_MARKER")"
+    chown aicode:aicode "$AICODE_STATE_DIR"
+    run_init_scripts "$IMAGE_INIT_DIR"
+    run_init_scripts "$USER_INIT_DIR"
     touch "$INIT_MARKER"
-    chown aicode:aicode "$INIT_MARKER"
 fi
 
 # ── 4. load persisted auth env ────────────────────────────────────────────────
@@ -139,7 +158,7 @@ AICODE_UID=$(id -u aicode)
 AICODE_GID=$(id -g aicode)
 
 ENV_EXPORTS="export HOME=/home/aicode"
-ENV_EXPORTS="$ENV_EXPORTS; export PATH=/home/aicode/.local/bin:/usr/local/bin:/usr/bin:/bin"
+ENV_EXPORTS="$ENV_EXPORTS; export PATH=$AICODE_PATH"
 
 # Forward auth-relevant env vars verbatim (the adapter decides which it needs).
 for var in ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_OAUTH_TOKEN \

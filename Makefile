@@ -10,7 +10,7 @@ TAG        := v$(VERSION)
 -include .env
 export
 
-.PHONY: all build build-full build-all full-node-lock full-python-lock run test test-unit test-full-image lint format clean help version
+.PHONY: all build build-full build-all full-node-lock full-python-lock run test test-unit test-integration test-full-image lint format clean help version
 
 all: build ## Build the base image
 
@@ -53,6 +53,9 @@ test: test-unit ## Run all tests
 
 test-unit: ## Run the python unit-test suite locally (no docker)
 	uv run --group dev pytest -q
+
+test-integration: build ## Build and verify the entrypoint's user bin/ PATH and init.d hooks
+	IMAGE=$(IMAGE_NAME):$(TAG) bash scripts/test-entrypoint-hooks.sh
 
 test-full-image: build-full ## Build full and verify the documented CLI toolchain
 	IMAGE=$(IMAGE_NAME):latest-full bash scripts/test-full-image.sh

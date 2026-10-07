@@ -41,6 +41,7 @@ agent's state themselves.
   - [Cron mode](#cron-mode)
   - [MCP server](#mcp-server)
 - [Configuration](#configuration)
+- [Init scripts and user bin](#init-scripts-and-user-bin)
 - [Child image recipe](#child-image-recipe)
 - [Full image](#full-image)
 - [Development](#development)
@@ -55,7 +56,7 @@ agent's state themselves.
 | **Package** | `aicodebox` — the adapter contract + four mode dispatchers (api / telegram / cron / mcp). Pure Python, zero side effects until you boot a mode.                                                    |
 | **Modes**   | All optional, all opt-in via env vars. Run none or one per container. Exception: telegram + cron can share a container — cron runs in-thread inside the telegram process.                          |
 | **Auth**    | `AICODEBOX_API_MODE_TOKEN` gates API mode; `AICODEBOX_MCP_MODE_TOKEN` gates MCP. Single bearer per surface, no fallback between them. Empty = no auth. Telegram has its own allowlist.              |
-| **State**   | Per-chat overrides + cron history go under `$HOME/.aicodebox/`. Bind-mount that path if you want it to outlive the container. The package itself stores nothing.                                    |
+| **State**   | Per-chat overrides + cron history go under `$HOME/.aicodebox/`, along with your own `bin/` and `init.d/` (see [Init scripts and user bin](#init-scripts-and-user-bin)). Bind-mount that path if you want it to outlive the container. The package itself stores nothing. |
 
 `psyb0t/aicodebox:latest` is deliberately small. The matching
 `psyb0t/aicodebox:latest-full` variant adds the shared development toolchain
@@ -265,6 +266,17 @@ Env var convention: `<MODE>_MODE` is the on/off flag for that mode; `<MODE>_MODE
 | `AICODEBOX_MCP_MODE_ALLOWED_HOSTS` | loopback hosts | Comma-separated `Host` values accepted by MCP. Add each reverse-proxy host name. |
 | `AICODEBOX_MCP_MODE_ALLOWED_ORIGINS` | loopback HTTP origins | Comma-separated browser origins accepted by MCP. Add each proxy origin that sends browser requests. |
 
+## Init scripts and user bin
+
+The entrypoint runs init scripts once per container, the first time it starts. Restarting the container does not run them again; a new container does, even when it mounts the same `$HOME/.aicodebox`. The record of the run lives in the container filesystem at `/var/lib/aicodebox/init-done`.
+
+1. `/aicodebox-init.d/*.sh`, which the child image bakes in, run first.
+2. `$HOME/.aicodebox/init.d/*.sh`, your own, run next. Bind-mount `$HOME/.aicodebox` to supply them.
+
+Both sets run in filename order as `aicode`, which has passwordless sudo, with `$HOME/.aicodebox/bin` already on `PATH`. A script that exits non-zero is logged as `[entrypoint] init script <path> failed`, and the rest still run.
+
+Executables in `$HOME/.aicodebox/bin` are on `PATH` ahead of everything else, for the agent in every mode, for init scripts, and for `docker exec` shells.
+
 ## Child image recipe
 
 Minimal adapter that wires up an npm-shipped agent:
@@ -318,6 +330,7 @@ make build-full      # build aicodebox:latest-full on the matching local minimal
 make build-all        # build both variants
 make test            # python unit tests (199 cases, adapter contract, modes, helpers)
 make test-unit       # same as test
+make test-integration # build and verify the init.d and user bin/ hooks
 make test-full-image # build full and verify every documented CLI tool
 make lint            # flake8 + pyright
 make format          # isort + black

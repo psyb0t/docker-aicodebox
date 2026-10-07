@@ -125,7 +125,10 @@ WORKDIR /workspace
 COPY entrypoint.sh /usr/local/bin/aicodebox-entrypoint
 RUN chmod +x /usr/local/bin/aicodebox-entrypoint
 
+# Scripts in the state dir's bin/ are on PATH for `docker exec` shells too; the
+# entrypoint sets the same order for every mode it starts.
 ENV AICODE_WORKSPACE=/workspace \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    PATH="/home/aicode/.aicodebox/bin:${PATH}"
 
 ENTRYPOINT ["/usr/local/bin/aicodebox-entrypoint"]

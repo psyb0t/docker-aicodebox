@@ -4,6 +4,15 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking REST changes (called
 out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.17.0, 2026-10-07
+
+Adds user init scripts and a user `bin/` directory, and runs init once per container.
+
+- Executables in `$HOME/.aicodebox/bin` are on `PATH` ahead of everything else, for the agent in every mode, for init scripts, and for `docker exec` shells.
+- After the child image's `/aicodebox-init.d/*.sh`, the entrypoint runs `$HOME/.aicodebox/init.d/*.sh` from the state directory in filename order, as `aicode` with passwordless sudo. A failing script is logged as `[entrypoint] init script <path> failed` and the rest still run.
+- Init now runs once per container. The marker moved from `$HOME/.aicodebox/.init-done` to `/var/lib/aicodebox/init-done` in the container filesystem. Child images bind-mount the state directory from the host, so the old marker made init run once for the life of that host directory, and every later container skipped it. After upgrading, a child image's init scripts run again in each new container, so they must be safe to repeat. A leftover `.init-done` in a mounted state directory is ignored and can be deleted.
+- `make test-integration` builds the image and checks these hooks in real containers.
+
 ## v0.16.1, 2026-09-29
 
 Corrects the MCP and cron operational contracts.
