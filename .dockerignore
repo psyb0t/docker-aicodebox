@@ -14,6 +14,10 @@ dist
 ANUSTIMES.md
 CLAUDE.md
 git-update.sh
+git-update.sh.debot
+.env
+.env.*
+*.env
 pyrightconfig.json
 README.md
 LICENSE

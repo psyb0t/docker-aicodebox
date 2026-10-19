@@ -33,17 +33,17 @@ docker run --rm -e AICODEBOX_AGENT_BINARY=/bin/bash "$IMAGE" -lc '
 
     [[ "${AICODEBOX_IMAGE_VARIANT:-}" == "full" ]]
     [[ "$(id -un)" == "aicode" ]]
-    [[ "$(go version)" == *"go1.26.8"* ]]
-    [[ "$(python --version 2>&1)" == "Python 3.14.7" ]]
-    [[ "$(node --version)" == "v24.20.0" ]]
-    [[ "$(pnpm --version)" == "12.3.4" ]]
-    [[ "$(gh --version)" == "gh version 2.100.0"* ]]
-    [[ "$(terraform version)" == "Terraform v1.16.1"* ]]
-    [[ "$(kubectl version --client --output=json | jq -r .clientVersion.gitVersion)" == "v1.37.0" ]]
-    [[ "$(helm version --template "{{ .Version }}")" == "v3.21.4" ]]
-    [[ "$(isort --version-number)" == "9.0.1"* ]]
-    [[ "$(mypy --version)" == "mypy 2.3.1"* ]]
-    [[ "$(poetry --version)" == "Poetry (version 2.4.3)" ]]
+    [[ "$(go version)" == *"go1.27.2"* ]]
+    [[ "$(python --version 2>&1)" == "Python 3.14.8" ]]
+    [[ "$(node --version)" == "v24.21.0" ]]
+    [[ "$(pnpm --version)" == "12.12.1" ]]
+    [[ "$(gh --version)" == "gh version 2.102.0"* ]]
+    [[ "$(terraform version)" == "Terraform v1.16.5"* ]]
+    [[ "$(kubectl version --client --output=json | jq -r .clientVersion.gitVersion)" == "v1.37.1" ]]
+    [[ "$(helm version --template "{{ .Version }}")" == "v3.22.0" ]]
+    [[ "$(isort --version-number)" == "9.0.2"* ]]
+    [[ "$(mypy --version)" == "mypy 2.4.0"* ]]
+    [[ "$(poetry --version)" == "Poetry (version 2.5.1)" ]]
     python -c "import aicodebox"
 
     tools=(

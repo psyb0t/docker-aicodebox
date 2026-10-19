@@ -52,7 +52,7 @@ agent's state themselves.
 | Layer       | The goods                                                                                                                                                                                          |
 | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **OS**      | Ubuntu 24.04. `aicode` user (UID 1000), passwordless sudo, docker group.                                                                                                                          |
-| **Runtimes**| Node.js 24.20.0 LTS (for agents that ship as npm), Python 3.14.7, Docker CE + buildx + compose (in case your agent needs to spawn containers).                                                    |
+| **Runtimes**| Node.js 24.21.0 LTS (for agents that ship as npm), Python 3.14.8, Docker CE + buildx + compose (in case your agent needs to spawn containers).                                                    |
 | **Package** | `aicodebox` — the adapter contract + four mode dispatchers (api / telegram / cron / mcp). Pure Python, zero side effects until you boot a mode.                                                    |
 | **Modes**   | All optional, all opt-in via env vars. Run none or one per container. Exception: telegram + cron can share a container — cron runs in-thread inside the telegram process.                          |
 | **Auth**    | `AICODEBOX_API_MODE_TOKEN` gates API mode; `AICODEBOX_MCP_MODE_TOKEN` gates MCP. Single bearer per surface, no fallback between them. Empty = no auth. Telegram has its own allowlist.              |
@@ -64,6 +64,8 @@ for agent images that need it: Go and its language servers and linters, pinned
 Node and Python developer tools, editors and diagnostics, database clients,
 and `gh`, Terraform, kubectl, and Helm. It is built after the minimal image in
 CI, so the full tag inherits the minimal image from the same release.
+
+The full image retains optional Node tools with known dependency vulnerabilities. See [the advisory inventory and exposure notes](docs/dependency-audit.md). Use the minimal image when those tools are unnecessary.
 
 ## The adapter contract
 
@@ -328,7 +330,7 @@ make help            # list targets
 make build           # docker build .
 make build-full      # build aicodebox:latest-full on the matching local minimal tag
 make build-all        # build both variants
-make test            # python unit tests (199 cases, adapter contract, modes, helpers)
+make test            # python unit tests (217 cases, adapter contract, modes, helpers)
 make test-unit       # same as test
 make test-integration # build and verify the init.d and user bin/ hooks
 make test-full-image # build full and verify every documented CLI tool

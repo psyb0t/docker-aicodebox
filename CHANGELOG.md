@@ -4,6 +4,14 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking REST changes (called
 out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.18.0, 2026-10-19
+
+- Updates Python to 3.14.8, Node to 24.21.0, uv to 0.13.0, and the locked API, MCP and Telegram dependencies. MCP stays on the compatible 1.x SDK.
+- Updates the full image to Go 1.27.2 and refreshes its pinned Go, Node and Python tools. Builds gopls in its own locked module graph and stops immediately if any Go tool fails to build.
+- First-party image consumers follow the published `latest` and `latest-full` variants. External tool images remain digest-pinned.
+- Retains the optional Node tools with their remaining dependency vulnerabilities documented in [the advisory inventory](docs/dependency-audit.md).
+- Default-branch pushes build both image variants and publish per-commit SHA tags. Release tags wait for that same commit's successful default-branch run, then promote its images without rebuilding and create the GitHub release from the annotated tag notes.
+
 ## v0.17.0, 2026-10-07
 
 Adds user init scripts and a user `bin/` directory, and runs init once per container.

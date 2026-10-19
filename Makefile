@@ -10,7 +10,7 @@ TAG        := v$(VERSION)
 -include .env
 export
 
-.PHONY: all build build-full build-all full-node-lock full-python-lock run test test-unit test-integration test-full-image lint format clean help version
+.PHONY: all build build-full build-all pkg-lock full-go-lock full-node-lock full-python-lock run test test-unit test-integration test-full-image lint format clean help version
 
 all: build ## Build the base image
 
@@ -23,19 +23,29 @@ build: ## Build the Docker image, tagged with the pyproject version + :latest
 build-full: build ## Build the matching full development-toolchain variant
 	docker build \
 		-f Dockerfile.full \
-		--build-arg BASE_IMAGE=$(IMAGE_NAME):$(TAG) \
+		--build-arg BASE_IMAGE=$(IMAGE_NAME):latest \
 		-t $(IMAGE_NAME):$(TAG)-full \
 		-t $(IMAGE_NAME):latest-full \
 		.
 
 build-all: build build-full ## Build the minimal and full image variants
 
+pkg-lock: ## Refresh the Python dependency lock under the configured age cutoff
+	uv lock
+
+full-go-lock: ## Refresh full-image Go tool checksums
+	docker run --rm --user "$$(id -u):$$(id -g)" \
+		-e HOME=/tmp -e GOPATH=/tmp/go -e GOCACHE=/tmp/go-build \
+		-v "$(CURDIR)/full-go:/work" -w /work \
+		golang:1.27.2-bookworm@sha256:5cf287a799e6b94384bad13d16b14904c531f51ba65792237e122ce42b392f61 \
+		sh -c 'go mod download all && cd gopls && go mod download all'
+
 full-node-lock: ## Regenerate the full-image Node lockfile
 	docker run --rm --user "$$(id -u):$$(id -g)" \
 		-e HOME=/tmp -e COREPACK_HOME=/tmp/corepack \
 		-v "$(CURDIR)/full-node:/work" -w /work \
-		node:24.20.0-bookworm-slim@sha256:ba849c60be29959425b8734d57b8b4b7d56f98edd9504c9af091d5281095a71e \
-		bash -lc 'corepack pnpm@12.3.4 install --lockfile-only --ignore-scripts'
+		node:24.21.0-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20 \
+		bash -lc 'corepack pnpm@12.12.1 update --depth Infinity --lockfile-only --ignore-scripts'
 
 full-python-lock: build ## Regenerate the full-image Python requirements lockfile
 	docker run --rm --user "$$(id -u):$$(id -g)" \
@@ -43,7 +53,7 @@ full-python-lock: build ## Regenerate the full-image Python requirements lockfil
 		-v "$(CURDIR)/full-python:/work" -w /work \
 		--entrypoint uv $(IMAGE_NAME):$(TAG) \
 		pip compile --python-version 3.14 \
-			--exclude-newer 2026-09-06T19:11:00Z --generate-hashes \
+			--exclude-newer 2026-10-12T00:00:00Z --generate-hashes \
 			-o requirements.txt requirements.in
 
 run: build ## Drop into an interactive shell inside the base image

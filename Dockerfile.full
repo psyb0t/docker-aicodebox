@@ -61,9 +61,9 @@ RUN set -eux; \
 
 ARG TARGETARCH
 
-ARG GO_VERSION=1.26.8
-ARG GO_SHA256_AMD64=d0f743b33e8d8945e6b1f432edd15785c70507121d6e2a723b21285eddf8b57b
-ARG GO_SHA256_ARM64=211ffced9dcb9633a55eac6364816ec0ddd951389a740e88fa8b3337971bdda0
+ARG GO_VERSION=1.27.2
+ARG GO_SHA256_AMD64=ecbadb99091a3f46e31f5f934b068b1864eafa7995211b39eaddf76996045fe5
+ARG GO_SHA256_ARM64=94f3e30b8e374bc285e7dadc11e0865726b9bc6e85b841ccceaabc0214c6b7c8
 RUN architecture="${TARGETARCH:-amd64}" && \
     case "$architecture" in \
         amd64) go_sha256="$GO_SHA256_AMD64" ;; \
@@ -83,9 +83,9 @@ ENV PATH="/usr/local/go/bin:${PATH}" \
     GOSUMDB=sum.golang.org \
     GOFLAGS=-mod=readonly
 
-ARG GOLANGCI_LINT_VERSION=2.13.2
-ARG GOLANGCI_LINT_SHA256_AMD64=2277d43b98ec0054280f2ac26b53268bae97682444678a59a657dd565da021d6
-ARG GOLANGCI_LINT_SHA256_ARM64=a2a4e0065aa41be71f7c5ac90f271b61751331e5d04314e62afe4027855f0893
+ARG GOLANGCI_LINT_VERSION=2.14.0
+ARG GOLANGCI_LINT_SHA256_AMD64=ab90aeb7b066f92a33415b638a50fe5344bbb75a0d32ad30cc248d88f81032ab
+ARG GOLANGCI_LINT_SHA256_ARM64=ee7ec5f3453d15ddf106fae5a4d6c71737712348a979d1fe9cd52ec7ea299bae
 RUN architecture="${TARGETARCH:-amd64}" && \
     case "$architecture" in \
         amd64) lint_sha256="$GOLANGCI_LINT_SHA256_AMD64" ;; \
@@ -105,18 +105,22 @@ RUN architecture="${TARGETARCH:-amd64}" && \
         "/tmp/golangci-lint-${GOLANGCI_LINT_VERSION}-linux-${architecture}"
 
 COPY full-go/go.mod full-go/go.sum full-go/tools.txt /tmp/aicodebox-go-tools/
+COPY full-go/gopls/go.mod full-go/gopls/go.sum /tmp/aicodebox-go-tools/gopls/
 RUN cd /tmp/aicodebox-go-tools && \
     go mod download all && \
     while IFS= read -r package; do \
         case "$package" in \#*|'') continue ;; esac; \
         binary="${package##*/}"; \
-        CGO_ENABLED=0 go build -mod=readonly -o "/usr/local/bin/$binary" "$package"; \
+        CGO_ENABLED=0 go build -mod=readonly -o "/usr/local/bin/$binary" "$package" || exit 1; \
     done < tools.txt && \
+    cd gopls && \
+    go mod download all && \
+    CGO_ENABLED=0 go build -mod=readonly -o /usr/local/bin/gopls golang.org/x/tools/gopls && \
     rm -rf /tmp/aicodebox-go-tools /root/.cache/go-build
 
-ARG GH_VERSION=2.100.0
-ARG GH_SHA256_AMD64=e4d4bb4498e8d007abe545b6568926793ace1b6447da598294a610018cb164be
-ARG GH_SHA256_ARM64=ea4e7a581a32ccad6cc7923cb1576ac5859ba4b9a16ab22eb8f8a96e78e2e961
+ARG GH_VERSION=2.102.0
+ARG GH_SHA256_AMD64=bb766f710eef8ede859c18578c72c327597cd4c8a85b06001b1f3843c6019386
+ARG GH_SHA256_ARM64=7862c86c72f43df3a2d93ddde6f473285b4e2af61b494849846827e513ef6484
 RUN architecture="${TARGETARCH:-amd64}" && \
     case "$architecture" in \
         amd64) gh_sha256="$GH_SHA256_AMD64" ;; \
@@ -132,9 +136,9 @@ RUN architecture="${TARGETARCH:-amd64}" && \
     install -m 0755 "/tmp/gh_${GH_VERSION}_linux_${architecture}/bin/gh" /usr/local/bin/gh && \
     rm -rf "$gh_archive" "/tmp/gh_${GH_VERSION}_linux_${architecture}"
 
-ARG TERRAFORM_VERSION=1.16.1
-ARG TERRAFORM_SHA256_AMD64=745d33b4b02b7980c62a38ec1beea24ee084ea8caf3f503c200554bd9a0cbe49
-ARG TERRAFORM_SHA256_ARM64=423288a23ab024d42ac05c409972585f7ec0cf1be572b773ad952f9a1c41387d
+ARG TERRAFORM_VERSION=1.16.5
+ARG TERRAFORM_SHA256_AMD64=2bc2fcfff033265c9e02ca0351f01794eb122f62a9b2a49a3294b9e49eaab5e4
+ARG TERRAFORM_SHA256_ARM64=61a50b00485ee4810cf20581ef080fc54d34d666e175c58d9a10501c65c1ccde
 RUN architecture="${TARGETARCH:-amd64}" && \
     case "$architecture" in \
         amd64) terraform_sha256="$TERRAFORM_SHA256_AMD64" ;; \
@@ -150,9 +154,9 @@ RUN architecture="${TARGETARCH:-amd64}" && \
     install -m 0755 /tmp/terraform/terraform /usr/local/bin/terraform && \
     rm -rf "$terraform_archive" /tmp/terraform
 
-ARG KUBECTL_VERSION=v1.37.0
-ARG KUBECTL_SHA256_AMD64=6129359f4e1f3848a5572ccb0b26cf28b8ca08cef38c95a765b2f64a2c961a2f
-ARG KUBECTL_SHA256_ARM64=922df28df248cc00a9e025f947704f1d1482de64ece54cfe57e61f19eaf1eef3
+ARG KUBECTL_VERSION=v1.37.1
+ARG KUBECTL_SHA256_AMD64=65691ff77eb6fa44c908b77a1082c9f092c3b9733b5cefabec0d1104890e21a8
+ARG KUBECTL_SHA256_ARM64=ff749f4b78d9c4f1ec87307df9b50119ed819e2094aa9810cb9acffc3286c8c7
 RUN architecture="${TARGETARCH:-amd64}" && \
     case "$architecture" in \
         amd64) kubectl_sha256="$KUBECTL_SHA256_AMD64" ;; \
@@ -165,9 +169,9 @@ RUN architecture="${TARGETARCH:-amd64}" && \
     install -m 0755 /tmp/kubectl /usr/local/bin/kubectl && \
     rm -f /tmp/kubectl
 
-ARG HELM_VERSION=3.21.4
-ARG HELM_SHA256_AMD64=61f88ab166748cb19604d7884cb100ae9ccb13804ddeb98e08af167eacbb6a14
-ARG HELM_SHA256_ARM64=b54c04b4e0b2540bbdc08c17a121dab70e9a2ed0de5705528fec68a5fd3b85a7
+ARG HELM_VERSION=3.22.0
+ARG HELM_SHA256_AMD64=1e4ab49e429626cf6c6958d914248b78c9730803c2751b87627e171dc800e7bb
+ARG HELM_SHA256_ARM64=f14e804dfee240f55525b667488fe9adca349e63e00c9af634c0beb1421ac310
 RUN architecture="${TARGETARCH:-amd64}" && \
     case "$architecture" in \
         amd64) helm_sha256="$HELM_SHA256_AMD64" ;; \
@@ -183,7 +187,7 @@ RUN architecture="${TARGETARCH:-amd64}" && \
     rm -rf "$helm_archive" "/tmp/linux-${architecture}"
 
 COPY full-node/package.json full-node/pnpm-lock.yaml full-node/.npmrc /opt/aicodebox-node/
-RUN corepack pnpm@12.3.4 install --dir /opt/aicodebox-node \
+RUN corepack pnpm@12.12.1 install --dir /opt/aicodebox-node \
         --frozen-lockfile --prod --ignore-scripts && \
     find /opt/aicodebox-node/node_modules/.bin -maxdepth 1 -type f -executable \
         -exec ln -sf '{}' /usr/local/bin/ ';' && \

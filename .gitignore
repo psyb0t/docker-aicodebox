@@ -11,6 +11,7 @@ ANUSTIMES.md
 CLAUDE.md
 PLAN.md
 git-update.sh
+git-update.sh.debot
 pyrightconfig.json
 .mypy_cache/
 .pytest_cache/

@@ -12,8 +12,8 @@
 #   - ENV AICODEBOX_ADAPTER=yourpkg.adapter:YourAdapter
 FROM ubuntu:24.04@sha256:224a1869083a311ef3f13648a154ba79832fbef6364d31493642ca03082da254 AS python-builder
 
-ARG PYTHON_VERSION=3.14.7
-ARG PYTHON_SHA256=3b48dac8fb59f62eaa67ac83c1eb12bda1b7a08406dd286e252c11a66be27f81
+ARG PYTHON_VERSION=3.14.8
+ARG PYTHON_SHA256=c2215904f02b175596dc49351585104f4bc20341e1c47378b26a2c274360ce73
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
@@ -54,9 +54,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Node.js LTS. Install the official, checksum-verified archive so builds do not
 # float with a third-party apt repository.
-ARG NODE_VERSION=24.20.0
-ARG NODE_SHA256_amd64=2f2c0da162318f0de47665410c7c8c2ed3d36c8f3105de4bbc61176c70a7cbf2
-ARG NODE_SHA256_arm64=5f4ddab610c1ab2016b3c227cebdbf6d9495161487e4739c7b90090595f465f7
+ARG NODE_VERSION=24.21.0
+ARG NODE_SHA256_amd64=fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6
+ARG NODE_SHA256_arm64=6ad1325edbdb5649c379b75a237147a666c95d4f9ae8d340fef2d1575d289ad2
 ARG TARGETARCH
 RUN ARCH="${TARGETARCH:-amd64}" && \
     case "$ARCH" in \
@@ -78,9 +78,9 @@ RUN ln -s /usr/local /opt/python && \
     ln -sf /usr/local/bin/python3.14 /usr/local/bin/python && \
     ln -sf /usr/local/bin/pip3.14 /usr/local/bin/pip3 && \
     ln -sf /usr/local/bin/pip3.14 /usr/local/bin/pip && \
-    python3 --version | grep -Fx "Python 3.14.7"
+    python3 --version | grep -Fx "Python 3.14.8"
 
-COPY --from=ghcr.io/astral-sh/uv:0.12.10@sha256:2bb3ebca0a796a155094a27773d290c4b074572e6107f171d88d086682fd2500 /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.13.0@sha256:cdc6093146eb3ff6a40107b38f008b789e050e77ad87865e381d9917da55a168 /uv /usr/local/bin/uv
 
 ENV UV_COMPILE_BYTECODE=1
 
