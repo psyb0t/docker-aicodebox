@@ -14,7 +14,29 @@
 # Child images may set:
 #   AICODEBOX_ADAPTER=pkg.module:Class   # required for modes
 #   AICODEBOX_AGENT_BINARY=pi            # the bin name for passthrough invocation
-set -e
+set -euo pipefail
+
+log() {
+    local level="$1" message="$2"
+    jq -cn \
+        --arg time "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+        --arg level "$level" \
+        --arg file "${BASH_SOURCE[1]##*/}" \
+        --argjson line "${BASH_LINENO[0]}" \
+        --arg func "${FUNCNAME[1]:-main}" \
+        --arg msg "$message" \
+        '{time:$time,level:$level,file:$file,line:$line,func:$func,msg:$msg}' >&2
+}
+trap 'log ERROR "container entrypoint failed"' ERR
+
+for identity_var in AICODEBOX_GIT_NAME AICODEBOX_GIT_EMAIL; do
+    case "${!identity_var:-}" in
+        *$'\n'* | *$'\r'*)
+            log ERROR "$identity_var must be a single line"
+            exit 1
+            ;;
+    esac
+done
 
 dbg() {
     if [ "${DEBUG:-}" = "true" ]; then
@@ -69,8 +91,8 @@ if [ -d "$AICODE_WORKSPACE" ]; then
         if [ "$HOST_UID" != "$CURRENT_UID" ]; then
             usermod -u "$HOST_UID" aicode
         fi
-        find /home/aicode \( ! -user "$HOST_UID" -o ! -group "$HOST_GID" \) -print0 \
-            | xargs -0 -r -P "$(( $(nproc) / 2 + 1 ))" chown aicode:aicode 2>/dev/null || true
+        find /home/aicode \( ! -user "$HOST_UID" -o ! -group "$HOST_GID" \) -print0 |
+            xargs -0 -r -P "$(($(nproc) / 2 + 1))" chown aicode:aicode 2>/dev/null || true
     fi
 fi
 
@@ -78,11 +100,24 @@ fi
 if [ -S /var/run/docker.sock ]; then
     SOCKET_GID=$(stat -c '%g' /var/run/docker.sock)
     CURRENT_DOCKER_GID=$(getent group docker | cut -d: -f3 || echo "")
-    if [ -n "$SOCKET_GID" ] && [ -n "$CURRENT_DOCKER_GID" ] \
-        && [ "$SOCKET_GID" != "$CURRENT_DOCKER_GID" ]; then
+    if [ -n "$SOCKET_GID" ] && [ -n "$CURRENT_DOCKER_GID" ] &&
+        [ "$SOCKET_GID" != "$CURRENT_DOCKER_GID" ]; then
         groupmod -g "$SOCKET_GID" docker
     fi
 fi
+
+for identity_field in name email; do
+    case "$identity_field" in
+        name) identity_value="${AICODEBOX_GIT_NAME:-}" ;;
+        email) identity_value="${AICODEBOX_GIT_EMAIL:-}" ;;
+    esac
+    [ -n "$identity_value" ] || continue
+    if ! sudo -u aicode -H git config --global --replace-all -- "user.$identity_field" "$identity_value"; then
+        log ERROR "cannot configure runtime Git $identity_field"
+        exit 1
+    fi
+done
+unset identity_var identity_field identity_value
 
 # ── 3. first-run init.d ───────────────────────────────────────────────────────
 # The child image's scripts run first, then the user's from the state dir.
@@ -162,10 +197,10 @@ ENV_EXPORTS="$ENV_EXPORTS; export PATH=$AICODE_PATH"
 
 # Forward auth-relevant env vars verbatim (the adapter decides which it needs).
 for var in ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_OAUTH_TOKEN \
-           ANTHROPIC_BASE_URL ANTHROPIC_MODEL CLAUDE_CODE_OAUTH_TOKEN \
-           OPENAI_API_KEY OPENAI_BASE_URL OPENAI_ORG_ID \
-           GEMINI_API_KEY OPENROUTER_API_KEY ZAI_API_KEY \
-           GROQ_API_KEY DEEPSEEK_API_KEY XAI_API_KEY MISTRAL_API_KEY; do
+    ANTHROPIC_BASE_URL ANTHROPIC_MODEL CLAUDE_CODE_OAUTH_TOKEN \
+    OPENAI_API_KEY OPENAI_BASE_URL OPENAI_ORG_ID \
+    GEMINI_API_KEY OPENROUTER_API_KEY ZAI_API_KEY \
+    GROQ_API_KEY DEEPSEEK_API_KEY XAI_API_KEY MISTRAL_API_KEY; do
     val="$(printenv "$var" 2>/dev/null || true)"
     if [ -n "$val" ]; then
         ENV_EXPORTS="$ENV_EXPORTS; export $var=$(printf '%q' "$val")"
@@ -174,16 +209,16 @@ done
 
 # aicodebox-specific env (modes + adapter selection).
 for var in AICODEBOX_ADAPTER AICODEBOX_AGENT_BINARY AICODEBOX_WORKSPACE \
-           AICODEBOX_CONTAINER_NAME \
-           AICODEBOX_AVAILABLE_MODELS AICODEBOX_AVAILABLE_EFFORTS \
-           AICODEBOX_API_MODE AICODEBOX_API_MODE_PORT AICODEBOX_API_MODE_TOKEN \
-           AICODEBOX_TELEGRAM_MODE AICODEBOX_TELEGRAM_MODE_TOKEN \
-           AICODEBOX_TELEGRAM_MODE_CONFIG AICODEBOX_TELEGRAM_MODE_OVERRIDES \
-           AICODEBOX_CRON_MODE AICODEBOX_CRON_MODE_FILE AICODEBOX_CRON_MODE_HISTORY_DIR \
-           AICODEBOX_MCP_MODE AICODEBOX_MCP_MODE_PORT AICODEBOX_MCP_MODE_TOKEN \
-           AICODEBOX_MCP_MODE_ALLOWED_HOSTS \
-           AICODEBOX_MCP_MODE_ALLOWED_ORIGINS \
-           TELEGRAM_CHAT_ID DEBUG; do
+    AICODEBOX_CONTAINER_NAME \
+    AICODEBOX_AVAILABLE_MODELS AICODEBOX_AVAILABLE_EFFORTS \
+    AICODEBOX_API_MODE AICODEBOX_API_MODE_PORT AICODEBOX_API_MODE_TOKEN \
+    AICODEBOX_TELEGRAM_MODE AICODEBOX_TELEGRAM_MODE_TOKEN \
+    AICODEBOX_TELEGRAM_MODE_CONFIG AICODEBOX_TELEGRAM_MODE_OVERRIDES \
+    AICODEBOX_CRON_MODE AICODEBOX_CRON_MODE_FILE AICODEBOX_CRON_MODE_HISTORY_DIR \
+    AICODEBOX_MCP_MODE AICODEBOX_MCP_MODE_PORT AICODEBOX_MCP_MODE_TOKEN \
+    AICODEBOX_MCP_MODE_ALLOWED_HOSTS \
+    AICODEBOX_MCP_MODE_ALLOWED_ORIGINS \
+    TELEGRAM_CHAT_ID DEBUG; do
     val="$(printenv "$var" 2>/dev/null || true)"
     if [ -n "$val" ]; then
         ENV_EXPORTS="$ENV_EXPORTS; export $var=$(printf '%q' "$val")"

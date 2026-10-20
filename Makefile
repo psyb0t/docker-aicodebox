@@ -14,8 +14,13 @@ export
 
 all: build ## Build the base image
 
-version: ## Print the version that would be tagged
-	@echo $(TAG)
+V ?=
+export V
+version: ## Print or update the package version without committing: make version V=X.Y.Z
+	@set -eu; \
+	if [ -z "$$V" ]; then printf '%s\n' "$(TAG)"; exit 0; fi; \
+	printf '%s\n' "$$V" | LC_ALL=C grep -qE '^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.]+)?$$' || { echo "V must be semver X.Y.Z" >&2; exit 1; }; \
+	uv version --no-sync "$$V"
 
 build: ## Build the Docker image, tagged with the pyproject version + :latest
 	docker build -t $(IMAGE_NAME):$(TAG) -t $(IMAGE_NAME):latest .

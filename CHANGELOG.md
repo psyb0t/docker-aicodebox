@@ -4,6 +4,12 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking REST changes (called
 out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.18.1, 2026-10-20
+
+- Applies optional Git name and email settings to the runtime user's global configuration before init hooks and agent startup. Preserves existing values when settings are empty and rejects multiline input.
+- Makes `make version V=X.Y.Z` update package metadata without committing or tagging.
+- Adds real-container Git identity checks alongside the existing startup-hook integration tests.
+
 ## v0.18.0, 2026-10-19
 
 - Updates Python to 3.14.8, Node to 24.21.0, uv to 0.13.0, and the locked API, MCP and Telegram dependencies. MCP stays on the compatible 1.x SDK.

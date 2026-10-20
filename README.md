@@ -225,8 +225,12 @@ Env var convention: `<MODE>_MODE` is the on/off flag for that mode; `<MODE>_MODE
 | `AICODEBOX_AGENT_BINARY` | *required* | Name of the agent's CLI binary (for `which` checks, version reports) |
 | `AICODEBOX_WORKSPACE` | `/workspace` | Root dir for all per-chat / per-job workspaces |
 | `AICODEBOX_CONTAINER_NAME` | `aicodebox` | Display name in `/status`, logs, and per-container state files |
+| `AICODEBOX_GIT_NAME` | unset | Set the runtime user's global Git name before init scripts and agent startup |
+| `AICODEBOX_GIT_EMAIL` | unset | Set the runtime user's global Git email before init scripts and agent startup |
 | `AICODEBOX_AVAILABLE_MODELS` | — | **Required for API mode.** CSV list returned by `/openai/v1/models` and shown in the telegram `/model` picker. API mode refuses to boot without it; telegram `/model` picker degrades to a "set this env var" reply. |
 | `AICODEBOX_AVAILABLE_EFFORTS` | adapter list | Override the effort/`--thinking` list exposed via `/effort` (comma-separated) |
+
+Git identity settings are optional and applied on every container start. Empty values leave existing configuration unchanged. Newlines and carriage returns are rejected. Child images map their own Git identity prefixes to these shared names; an explicit shared setting wins.
 
 ### Mode flags
 

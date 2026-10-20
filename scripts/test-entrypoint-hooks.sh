@@ -30,6 +30,8 @@ readonly IMAGE_INIT_VOLUME="${PREFIX}-image-init"
 readonly STATE_DIR="/home/aicode/.aicodebox"
 readonly PROBE="aicodebox-hook-probe"
 readonly PROBE_OUTPUT="probe-ok"
+readonly TEST_GIT_NAME="Example User Ω; \$(false)"
+readonly TEST_GIT_EMAIL='example@example.invalid'
 
 failures=0
 
@@ -70,6 +72,8 @@ run_agent() {
 		-v "${STATE_VOLUME}:${STATE_DIR}" \
 		-v "${IMAGE_INIT_VOLUME}:/aicodebox-init.d" \
 		-e AICODEBOX_AGENT_BINARY=/bin/bash \
+		-e "AICODEBOX_GIT_NAME=$TEST_GIT_NAME" \
+		-e "AICODEBOX_GIT_EMAIL=$TEST_GIT_EMAIL" \
 		"$IMAGE" "$@"
 }
 
@@ -115,6 +119,30 @@ expect_equal "init log after a restart" "2" "$(volume_shell 'wc -l < /state/init
 log INFO "case: a new container on the same state dir runs init again"
 run_agent "${PREFIX}-second" -c true >/dev/null 2>&1
 expect_equal "init log after a second container" "4" "$(volume_shell 'wc -l < /state/init.log')"
+
+identity_output="$(run_agent "${PREFIX}-identity" -c 'git config --global --get user.name; git config --global --get user.email')" || identity_output=""
+expect_equal "runtime Git identity" "$(printf '%s\n%s' "$TEST_GIT_NAME" "$TEST_GIT_EMAIL")" "$identity_output"
+expect_equal "Git identity survives repeat startup" "$identity_output" "$(docker start -a "${PREFIX}-identity" 2>/dev/null)"
+docker rm "${PREFIX}-identity" >/dev/null
+
+case_index=0
+for identity_case in '||' 'Example User||Example User|' '|example@example.invalid||example@example.invalid' '--literal|example@example.invalid|--literal|example@example.invalid'; do
+	IFS='|' read -r case_name case_email expected_name expected_email <<<"$identity_case"
+	case_index=$((case_index + 1))
+	# Missing config fields are expected in the empty and single-field cases.
+	actual_identity="$(docker run --rm --name "${PREFIX}-git-$case_index" \
+		-e AICODEBOX_AGENT_BINARY=/bin/bash \
+		-e "AICODEBOX_GIT_NAME=$case_name" -e "AICODEBOX_GIT_EMAIL=$case_email" \
+		"$IMAGE" -c 'printf "%s|%s" "$(git config --global --get user.name || true)" "$(git config --global --get user.email || true)"')"
+	expect_equal "Git identity variation $case_index" "$expected_name|$expected_email" "$actual_identity"
+done
+
+if docker run --rm --name "${PREFIX}-git-invalid" \
+	-e AICODEBOX_AGENT_BINARY=/bin/true \
+	-e AICODEBOX_GIT_NAME=$'invalid\nname' "$IMAGE" >/dev/null 2>&1; then
+	log ERROR "multiline Git identity was accepted"
+	failures=$((failures + 1))
+fi
 
 log INFO "case: docker exec shells find scripts in the state dir's bin"
 docker run -d --name "${PREFIX}-exec" \
