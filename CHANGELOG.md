@@ -4,6 +4,11 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking REST changes (called
 out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.18.2, 2026-10-22
+
+- Handles workspace UID/GID and Docker socket GID collisions with existing image accounts. Preserves the workspace primary group, supplementary groups and passwordless sudo when IDs overlap.
+- Adds real-container regression tests for startup identity, ownership, socket permissions and repeated startup.
+
 ## v0.18.1, 2026-10-20
 
 - Applies optional Git name and email settings to the runtime user's global configuration before init hooks and agent startup. Preserves existing values when settings are empty and rejects multiline input.

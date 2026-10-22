@@ -232,6 +232,8 @@ Env var convention: `<MODE>_MODE` is the on/off flag for that mode; `<MODE>_MODE
 
 Git identity settings are optional and applied on every container start. Empty values leave existing configuration unchanged. Newlines and carriage returns are rejected. Child images map their own Git identity prefixes to these shared names; an explicit shared setting wins.
 
+At startup, `aicode` adopts the workspace owner's UID and GID when both are nonzero, including IDs already used by another account in the image. It keeps its supplementary groups, passwordless sudo, and access to a mounted Docker socket. If either workspace ID is zero, it keeps the image's non-root identity. Accounts sharing a UID have the same Unix identity; numeric username lookups may show the other account's name. `HOME` remains `/home/aicode`.
+
 ### Mode flags
 
 | Var | Default | What it does |
@@ -336,14 +338,15 @@ make build-full      # build aicodebox:latest-full on the matching local minimal
 make build-all        # build both variants
 make test            # python unit tests (217 cases, adapter contract, modes, helpers)
 make test-unit       # same as test
-make test-integration # build and verify the init.d and user bin/ hooks
+make test-integration # build and verify startup hooks, ownership and socket permissions
+make test-entrypoint-identity # test identity remapping with an existing local image
 make test-full-image # build full and verify every documented CLI tool
 make lint            # flake8 + pyright
 make format          # isort + black
 make clean           # nuke caches + the built image
 ```
 
-Tests run in-process — no docker required. The suite stubs out the adapter via `AICODEBOX_ADAPTER=aicodebox.tests.conftest:_StubAdapter` so the modes can be exercised without a real agent on disk.
+Python unit tests run in-process without Docker. The suite stubs out the adapter via `AICODEBOX_ADAPTER=aicodebox.tests.conftest:_StubAdapter` so the modes can be exercised without a real agent on disk. Entrypoint integration tests require Docker and run disposable containers without a host Docker socket or credentials. To test a changed entrypoint without rebuilding, run `ENTRYPOINT="$PWD/entrypoint.sh" make test-entrypoint-identity`; set `IMAGE` to select another existing image.
 
 For integration testing with a real agent + real Telegram chat, see the e2e harness in the [pibox](https://github.com/psyb0t/docker-pibox) repo — it uses [psyb0t/telethon-plus](https://github.com/psyb0t/docker-telethon) as a userbot driver.
 

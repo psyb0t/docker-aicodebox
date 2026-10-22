@@ -86,10 +86,10 @@ if [ -d "$AICODE_WORKSPACE" ]; then
     CURRENT_GID=$(id -g aicode)
     if [ "$HOST_UID" != "0" ] && [ "$HOST_GID" != "0" ]; then
         if [ "$HOST_GID" != "$CURRENT_GID" ]; then
-            groupmod -g "$HOST_GID" aicode
+            groupmod -o -g "$HOST_GID" aicode
         fi
         if [ "$HOST_UID" != "$CURRENT_UID" ]; then
-            usermod -u "$HOST_UID" aicode
+            usermod -o -u "$HOST_UID" aicode
         fi
         find /home/aicode \( ! -user "$HOST_UID" -o ! -group "$HOST_GID" \) -print0 |
             xargs -0 -r -P "$(($(nproc) / 2 + 1))" chown aicode:aicode 2>/dev/null || true
@@ -97,14 +97,28 @@ if [ -d "$AICODE_WORKSPACE" ]; then
 fi
 
 # ── 2. docker socket GID ──────────────────────────────────────────────────────
+AICODE_GID=$(id -g aicode)
 if [ -S /var/run/docker.sock ]; then
     SOCKET_GID=$(stat -c '%g' /var/run/docker.sock)
     CURRENT_DOCKER_GID=$(getent group docker | cut -d: -f3 || echo "")
     if [ -n "$SOCKET_GID" ] && [ -n "$CURRENT_DOCKER_GID" ] &&
         [ "$SOCKET_GID" != "$CURRENT_DOCKER_GID" ]; then
-        groupmod -g "$SOCKET_GID" docker
+        groupmod -o -g "$SOCKET_GID" docker
     fi
 fi
+
+# groupmod updates every primary user of the old GID, including aicode when
+# the workspace group shares Docker's previous GID.
+if [ "$(id -g aicode)" != "$AICODE_GID" ]; then
+    usermod -g "$AICODE_GID" aicode
+fi
+
+# sudo resolves the caller by numeric UID, which may name a pre-existing account.
+# Keep the image's passwordless sudo policy attached to the runtime UID too.
+AICODE_UID=$(id -u aicode)
+printf 'aicode ALL=(ALL) NOPASSWD:ALL\n#%s ALL=(ALL) NOPASSWD:ALL\n' "$AICODE_UID" \
+    >/etc/sudoers.d/aicode-nopass
+chmod 0440 /etc/sudoers.d/aicode-nopass
 
 for identity_field in name email; do
     case "$identity_field" in
@@ -250,5 +264,5 @@ fi
 cd "$AICODE_WORKSPACE" 2>/dev/null || cd /workspace
 
 dbg "$PY_INVOKE"
-exec setpriv --reuid="$AICODE_UID" --regid="$AICODE_GID" --init-groups \
+exec setpriv --reuid=aicode --regid="$AICODE_GID" --init-groups \
     bash -c "$ENV_EXPORTS && cd $(printf '%q' "$AICODE_WORKSPACE") && $PY_INVOKE"
