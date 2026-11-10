@@ -2,10 +2,10 @@
 
 [![CI](https://github.com/psyb0t/docker-aicodebox/actions/workflows/pipeline.yml/badge.svg?branch=main)](https://github.com/psyb0t/docker-aicodebox/actions/workflows/pipeline.yml)
 [![version](https://raw.githubusercontent.com/psyb0t/docker-aicodebox/badges/version.svg)](https://github.com/psyb0t/docker-aicodebox/releases)
-[![license](https://raw.githubusercontent.com/psyb0t/docker-aicodebox/badges/license.svg)](LICENSE)
+[![license](https://raw.githubusercontent.com/psyb0t/docker-aicodebox/badges/license.svg)](https://github.com/psyb0t/docker-aicodebox/blob/main/LICENSE)
 [![Docker Pulls](https://img.shields.io/docker/pulls/psyb0t/aicodebox?style=flat-square)](https://hub.docker.com/r/psyb0t/aicodebox)
 
-The agent-agnostic foundation for putting any terminal-shaped AI coding agent on the network. Pick your poison — `claude-code`, `pi`, `opencode`, `hermes`, whatever vibes — bolt on a 20-line adapter, and out the other end you get an **HTTP API**, an **OpenAI-compatible chat completions endpoint**, an **MCP server**, a **Telegram bot**, and a **cron scheduler** that fires the agent on whatever schedule you can dream up. One container. Same surfaces. Swap the brain.
+The agent-agnostic foundation for putting any terminal-shaped AI coding agent on the network. Pick your poison (`claude-code`, `pi`, `opencode`, `hermes`, whatever vibes), bolt on a short adapter class, and out the other end you get an **HTTP API**, an **OpenAI-compatible chat completions endpoint**, an **MCP server**, a **Telegram bot**, and a **cron scheduler** that fires the agent on whatever schedule you can dream up. One container. Same interfaces. Swap the brain.
 
 You don't fork this. You `FROM` it.
 
@@ -20,336 +20,98 @@ ENV AICODEBOX_ADAPTER=mypkg.adapter:MyAdapter \
     AICODEBOX_AGENT_BINARY=pi
 ```
 
-That's it. The base owns the surfaces. Your adapter translates "run this prompt" into whatever your agent's CLI expects. New agent lands in an afternoon.
+That's it. The base owns the modes. Your adapter translates "run this prompt" into whatever your agent's CLI expects. New agent lands in an afternoon.
 
-`aicodebox` is a base image, not a host launcher. Use a child wrapper such as
-[`claudebox`](https://github.com/psyb0t/docker-claudebox),
-[`codexbox`](https://github.com/psyb0t/docker-codexbox), or
-[`pibox`](https://github.com/psyb0t/docker-pibox) for local agent work. Those
-wrappers mount the requested workspace and the matching agent state. Child
-agents call a sibling wrapper directly when it is installed beside their own
-wrapper. They must not reconstruct its Docker command or mount another
-agent's state themselves.
+`aicodebox` is a base image, not a host launcher. For local agent work, use a child wrapper such as [`claudebox`](https://github.com/psyb0t/docker-claudebox), [`codexbox`](https://github.com/psyb0t/docker-codexbox) or [`pibox`](https://github.com/psyb0t/docker-pibox). Those wrappers mount the requested workspace and the matching agent state. A child agent calls a sibling wrapper directly when it is installed beside its own wrapper. It must not rebuild that wrapper's Docker command or mount another agent's state itself.
 
 ## Table of Contents
 
+- [Documentation](#documentation)
 - [What's in the box](#whats-in-the-box)
-- [The adapter contract](#the-adapter-contract)
+- [Quick start](#quick-start)
 - [Modes](#modes)
-  - [API mode](#api-mode)
-  - [Telegram mode](#telegram-mode)
-  - [Cron mode](#cron-mode)
-  - [MCP server](#mcp-server)
-- [Configuration](#configuration)
-- [Init scripts and user bin](#init-scripts-and-user-bin)
-- [Child image recipe](#child-image-recipe)
-- [Full image](#full-image)
 - [Development](#development)
+- [Sponsor](#sponsor)
 - [License](#license)
+
+## Documentation
+
+The full documentation lives at **[psyb0t.github.io/docker-aicodebox](https://psyb0t.github.io/docker-aicodebox/)**.
+
+| Section | What's there |
+| --- | --- |
+| [Child images](https://psyb0t.github.io/docker-aicodebox/child-images/) | Build an image for your agent, minimal or full parent, passthrough. |
+| [Adapter contract](https://psyb0t.github.io/docker-aicodebox/adapter-contract/) | `AgentAdapter`, `RunRequest`, `RunResult`, stream and native events. |
+| [Modes](https://psyb0t.github.io/docker-aicodebox/modes/) | How the flags pick a mode, where MCP goes, ports. |
+| [HTTP API](https://psyb0t.github.io/docker-aicodebox/api/) | `/run`, schema retries, events, async runs, files, `/status`, `/healthz`. |
+| [OpenAI-compatible endpoint](https://psyb0t.github.io/docker-aicodebox/openai/) | Streaming, `response_format`, tool calling, images, `x-aicodebox-*` headers. |
+| [MCP server](https://psyb0t.github.io/docker-aicodebox/mcp/) | Tools, tokens, host and origin allowlists. |
+| [Telegram bot](https://psyb0t.github.io/docker-aicodebox/telegram/) | `telegram.yml`, commands, files, overrides. |
+| [Cron scheduler](https://psyb0t.github.io/docker-aicodebox/cron/) | Jobs file, schedules, run history, notifications. |
+| [Configuration](https://psyb0t.github.io/docker-aicodebox/configuration/) | Every environment variable and its default. |
+| [Container startup](https://psyb0t.github.io/docker-aicodebox/container-startup/) | UID remapping, Docker socket, Git identity, init scripts, user `bin/`. |
+| [Full image](https://psyb0t.github.io/docker-aicodebox/full-image/) | The `latest-full` toolchain and its advisories. |
+| [Security](https://psyb0t.github.io/docker-aicodebox/security/) | What the agent can reach and what to set before exposing it. |
+| [Troubleshooting](https://psyb0t.github.io/docker-aicodebox/troubleshooting/) | Exact error messages and fixes. |
+| [Development](https://psyb0t.github.io/docker-aicodebox/development/) | Layout, Make targets, tests, CI, releases. |
 
 ## What's in the box
 
-| Layer       | The goods                                                                                                                                                                                          |
-| ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **OS**      | Ubuntu 24.04. `aicode` user (UID 1000), passwordless sudo, docker group.                                                                                                                          |
-| **Runtimes**| Node.js 24.21.0 LTS (for agents that ship as npm), Python 3.14.8, Docker CE + buildx + compose (in case your agent needs to spawn containers).                                                    |
-| **Package** | `aicodebox` — the adapter contract + four mode dispatchers (api / telegram / cron / mcp). Pure Python, zero side effects until you boot a mode.                                                    |
-| **Modes**   | All optional, all opt-in via env vars. Run none or one per container. Exception: telegram + cron can share a container — cron runs in-thread inside the telegram process.                          |
-| **Auth**    | `AICODEBOX_API_MODE_TOKEN` gates API mode; `AICODEBOX_MCP_MODE_TOKEN` gates MCP. Single bearer per surface, no fallback between them. Empty = no auth. Telegram has its own allowlist.              |
-| **State**   | Per-chat overrides + cron history go under `$HOME/.aicodebox/`, along with your own `bin/` and `init.d/` (see [Init scripts and user bin](#init-scripts-and-user-bin)). Bind-mount that path if you want it to outlive the container. The package itself stores nothing. |
-
-`psyb0t/aicodebox:latest` is deliberately small. The matching
-`psyb0t/aicodebox:latest-full` variant adds the shared development toolchain
-for agent images that need it: Go and its language servers and linters, pinned
-Node and Python developer tools, editors and diagnostics, database clients,
-and `gh`, Terraform, kubectl, and Helm. It is built after the minimal image in
-CI, so the full tag inherits the minimal image from the same release.
-
-The full image retains optional Node tools with known dependency vulnerabilities. See [the advisory inventory and exposure notes](docs/dependency-audit.md). Use the minimal image when those tools are unnecessary.
-
-## The adapter contract
-
-Everything routes through one interface. You implement it once per agent.
-
-```python
-# mypkg/adapter.py
-from aicodebox.adapters.base import AgentAdapter, RunRequest, RunResult, StreamEvent
-
-class MyAdapter(AgentAdapter):
-    name = "my-agent"
-    available_models = ["fast", "smart"]
-    available_thinking_levels = ["off", "low", "high"]
-
-    def build_argv(self, req: RunRequest) -> list[str]:
-        argv = ["my-agent", "-p", req.prompt]
-        if req.model: argv += ["--model", req.model]
-        if req.workspace: argv += ["--cwd", req.workspace]
-        return argv
-
-    def parse_output(self, stdout: str, req: RunRequest) -> RunResult:
-        # Required. Convert raw stdout into a normalized result. raw_stdout /
-        # raw_stderr / exit_code are filled in by the runner — set ``text``
-        # (and optionally ``parsed`` / ``usage`` / ``session_id``).
-        return RunResult(text=stdout.strip(), raw_stdout="", raw_stderr="", exit_code=0)
-
-    # Optional: structured stream events. The default is "one delta per
-    # stdout line" — override only if your binary emits a JSON event stream
-    # and you want per-token / per-tool granularity in OAI streaming.
-    def parse_stream_event(self, line: str, req: RunRequest) -> StreamEvent | None:
-        return StreamEvent(type="delta", text=line + "\n") if line else None
-
-```
-
-Full event retention is runner-owned. With `eventMode: "full"`, it keeps each
-non-empty stdout line. JSON objects remain provider records. Diagnostics,
-malformed JSON, and JSON values that are not objects remain raw line records.
-
-```dockerfile
-ENV AICODEBOX_ADAPTER=mypkg.adapter:MyAdapter
-```
-
-The package gets resolved at first call, cached for the process lifetime. Every mode pulls the same adapter — what gets exposed over HTTP / MCP / Telegram / cron is exactly what your `build_argv` knows how to drive.
-
-## Modes
-
-Modes are controlled by env vars. Set the flag, the entrypoint starts that mode. No flag, no mode. **Foreground modes** (API / Telegram / Cron) are mutually exclusive — except telegram + cron, which share a process (cron runs in-thread inside telegram). API wins if set alongside anything else. **MCP mode** is independent — it coexists with any foreground mode, served on its own port (or mounted at `/mcp/` inside API).
-
-### API mode
-
-`AICODEBOX_API_MODE=1`. Boots a FastAPI server on `:8080` (override with `AICODEBOX_API_MODE_PORT`) with:
-
-> **Required:** `AICODEBOX_AVAILABLE_MODELS=<csv>` — `/openai/v1/models` needs a real list, and there's no safe fallback (the adapter name isn't a model name). API mode refuses to boot without it. Pick the model ids your configured provider actually serves.
-
-- `POST /run` — sync agent run. `jsonSchema` and event collection are independent:
-  - **No `jsonSchema`, `eventMode: "none"`** returns `{runId, workspace, exitCode, text}`.
-  - **`"jsonSchema": {...}`** validates the final text and adds `json`, `sessionId`, `usage`, and `attempts`. Failed validation retries up to three times and returns `parseError` plus `jsonRetries` if every attempt fails.
-  - **`"eventMode": "full"`** adds the complete native agent event stream as `events`, including reasoning, tool lifecycle, usage, and provider metadata where the CLI exposes them. Each record has the stable envelope `{sequence, attempt, backend, eventType, event}`. `event` is the untouched provider record.
-  - **`"eventMode": "none"`** suppresses `events`, including for a schema request. **`"eventMode": "auto"`** is the default and keeps compatibility by enabling events for a schema request or `"outputFormat": "json-verbose"`.
-
-  `"outputFormat": "text"` and `"outputFormat": "json"` remain accepted legacy inputs but do not change the `/run` response shape. New callers should select event retention with `eventMode`; only `json-verbose` has a compatibility effect while `eventMode` is `auto`.
-
-  `usage` is the sum across every schema retry. `attempts` is the per-attempt breakdown `[{index, usage, exitCode, parseError}]`. Set `includeRaw` to also receive `stdout` and `stderr`; `stderr` is always included when `exitCode != 0`.
-
-  ```json
-  {
-    "prompt": "Inspect the workspace and return a short report.",
-    "eventMode": "full",
-    "jsonSchema": {"type": "object"}
-  }
-  ```
-
-- `POST /run` with `"async": true` or `"fireAndForget": true` returns `{runId, workspace, status: "running", fireAndForget}` immediately
-- `GET /run/result?runId=<id>` polls an async run. A completed response includes the synchronous result fields plus `status`.
-- `DELETE /run/{id}` — kill an in-flight run
-- `GET|PUT|DELETE /files/{path}` — workspace file CRUD
-- `POST /openai/v1/chat/completions` — OpenAI-compatible (streaming + non-streaming). Plug it into anything that speaks OpenAI. **Schema-validated JSON output**: stock OpenAI clients drive it via the standard `response_format` body field (`{"type":"json_object"}` for permissive, `{"type":"json_schema","json_schema":{"name":"...","schema":{...}}}` for structured outputs); the proprietary `x-aicodebox-json-schema` header is supported as a fallback. Body field wins if both are set. Schema mode runs up to 3 self-correction retries — success → canonical JSON in `message.content`, retries exhausted → **422**, agent process crash → **500** with exit code + stderr in `detail`, combined with `stream=true` → buffered SSE (see below). Additional RunSpec knobs via `x-aicodebox-*` headers: `workspace`, `continue`, `append-system-prompt`, `resume`, `extra-args`, `timeout-seconds`, `tools-allowlist`, `no-tools`. Malformed header values surface as 400 with the offending header name. When schema mode runs retries, `usage` is the **sum** across all attempts (input/output/total/cache fields all summed), and the envelope carries a vendor-extension `aicodebox_attempts: [{index, usage, exitCode, parseError}, ...]` so callers can see the per-attempt breakdown (OAI-only clients ignore the unknown field). **Cheap retries via session continuation**: schema requests that omit `x-aicodebox-workspace` get a per-request ephemeral workspace under `/tmp/aicodebox/<uuid>/` (cleaned up in `finally`); retries then run with `no_continue=False` and a minimal corrective prompt (error + directive + schema) instead of replaying the full original input, cutting per-retry input cost roughly 100x on large prompts. Callers that DO provide their own workspace fall back to fresh-session retries that re-state the original task — safe across any workspace, but more expensive. **Client-executed tool calling**: send the standard `tools` array (+ optional `tool_choice`) and the machine acts as a plain function-calling model — it responds with `tool_calls` + `finish_reason:"tool_calls"` when it wants a tool, your client runs the tool and sends the `role:"tool"` result back, and the loop continues (stateless, resend full history each round, exactly like OpenAI). `tool_choice` supports `auto`/`none`/`required`/`{type:"function",function:{name}}`. **`tools` + `response_format` compose** (agentic-then-structured): a tool-call turn returns `tool_calls`/`finish_reason:"tool_calls"` and is *not* schema-checked, while the model's final answer turn is validated against the schema (with retry) and returned as canonical JSON — so a multi-tool flow can end in a structured reply. **Streaming for tool/schema modes** (`stream=true` with `tools` or `response_format`) is served as **buffered SSE**: the full answer is computed, then replayed as a single-shot `text/event-stream` (opening role chunk → one `content`/`tool_calls` delta with the required `index` → finish chunk → `data: [DONE]`) — a valid stream, just not token-incremental. Plain chat still streams incrementally. In tool mode the harness's own internal tools default **off** (pure function-caller); send `x-aicodebox-no-tools: 0` to re-enable the hybrid (internal + client tools together).
-
-  For a stream that also needs every native provider record, send
-  `"stream_options": {"include_aicodebox_events": true}`. The response adds
-  named `aicodebox.native` SSE records with `{sequence, attempt, backend,
-  eventType, event}` before the ordinary OpenAI chunks. Normal content chunks
-  and `[DONE]` stay unchanged. The option requires `stream: true`.
-- `GET /openai/v1/models` — model list from the adapter
-- `POST /mcp/` — MCP server (mounted only when `AICODEBOX_MCP_MODE=1`; auth via `AICODEBOX_MCP_MODE_TOKEN`, separate from the API bearer)
-
-Bearer auth for the API surface: `AICODEBOX_API_MODE_TOKEN=<one-token>`. Single token, no rotation list. Empty = no auth.
-
-### Telegram mode
-
-`AICODEBOX_TELEGRAM_MODE=1` + `AICODEBOX_TELEGRAM_MODE_TOKEN=<bot:token>`. Drop the bot into a chat, talk to it, get answers. Features:
-
-- Text in → agent run → response chunked + Markdown→HTML rendered for Telegram.
-- File uploads (document / photo / video / voice) land in the chat's workspace.
-- `[SEND_FILE: relative/path]` in agent output delivers workspace files back as Telegram attachments.
-- Per-chat overrides: `/model`, `/effort`, `/system_prompt`, `/append_system_prompt`. Persisted to disk.
-- `/cancel` kills the in-flight run for the chat. `/reload` re-reads the yaml. `/config` dumps merged chat config. `/fetch <path>` downloads a workspace file. `/status` lists busy chats.
-- Replies to cron-fired messages inject the job's instruction + result so follow-ups make sense.
-
-Config lives at `$HOME/.aicodebox/telegram.yml`:
-
-```yaml
-allowed_chats: [-100123, 42]
-default:
-  model: glm-4.5-air
-  workspace: shared
-chats:
-  -100123:
-    workspace: alpha
-    model: claude-sonnet
-    allowed_users: [10, 20]
-```
-
-### Cron mode
-
-`AICODEBOX_CRON_MODE=1` + `AICODEBOX_CRON_MODE_FILE=/path/to/cron.yaml`. It accepts five field schedules for minute resolution and six field schedules for second resolution. Jobs can select safe relative workspace directories and optionally notify Telegram.
-
-```yaml
-jobs:
-  - name: morning-report
-    schedule: "0 0 9 * * *"
-    instruction: |
-      Summarize yesterday's git activity in {workspace}.
-    workspace: shared
-    telegram_chat_id: -100123
-    model: claude-sonnet
-```
-
-Each run gets its own history directory under `$HOME/.aicodebox/cron/history/<workspace-slug>/<YYYYMMDD-HHMMSS>-<job>/` with `meta.json`, `stdout.log`, `stderr.log`, `result.txt`, and `telegram.json` when notified. The scheduler also appends a summary to `$HOME/.aicodebox/cron/<job>.jsonl`. Set `AICODEBOX_CRON_MODE_HISTORY_DIR` to move the whole cron state root, including the Telegram reply metadata.
-
-### MCP mode
-
-`AICODEBOX_MCP_MODE=1`. Exposes the MCP (Model Context Protocol) surface. Coexists with any foreground mode:
-
-| Foreground | MCP placement |
-|---|---|
-| API mode (`AICODEBOX_API_MODE=1`) | mounted at `/mcp/` on the API port — no extra process |
-| Telegram / Cron / passthrough | runs as a sidecar uvicorn at `/` on `AICODEBOX_MCP_MODE_PORT` (default `8081`) |
-
-Auth: `AICODEBOX_MCP_MODE_TOKEN=<one-token>` — bearer token in the `Authorization: Bearer …` header, or `?apiToken=…` for clients that can't set headers. Empty = no auth. **No fallback to `API_MODE_TOKEN`** — MCP is its own surface with its own bearer.
-
-Point Claude Desktop / Cursor / whatever at `http://host:8080/mcp/` in API mode or `http://host:8081/` in standalone mode. The agent shows up as a set of tools (`run_prompt`, `list_files`, `read_file`, `write_file`, `delete_file`).
-
-MCP keeps DNS rebinding protection enabled. Loopback hosts and origins work by default. A reverse proxy, tunnel, or public DNS name must set `AICODEBOX_MCP_MODE_ALLOWED_HOSTS` to the exact `Host` values it forwards and `AICODEBOX_MCP_MODE_ALLOWED_ORIGINS` to exact browser origins, including their schemes. Do not disable this protection or use broad wildcards for an internet-facing endpoint.
-
-## Configuration
-
-Everything's an env var. The base sets sane defaults, your child image overrides.
-
-Env var convention: `<MODE>_MODE` is the on/off flag for that mode; `<MODE>_MODE_<KNOB>` is its config. Vars that aren't mode-scoped (workspace, adapter, container) are bare.
-
-### Adapter & container
-
-| Var | Default | What it does |
-|-----|---------|--------------|
-| `AICODEBOX_ADAPTER` | *required* | `pkg.module:Class` reference to your `AgentAdapter` subclass |
-| `AICODEBOX_AGENT_BINARY` | *required* | Name of the agent's CLI binary (for `which` checks, version reports) |
-| `AICODEBOX_WORKSPACE` | `/workspace` | Root dir for all per-chat / per-job workspaces |
-| `AICODEBOX_CONTAINER_NAME` | `aicodebox` | Display name in `/status`, logs, and per-container state files |
-| `AICODEBOX_GIT_NAME` | unset | Set the runtime user's global Git name before init scripts and agent startup |
-| `AICODEBOX_GIT_EMAIL` | unset | Set the runtime user's global Git email before init scripts and agent startup |
-| `AICODEBOX_AVAILABLE_MODELS` | — | **Required for API mode.** CSV list returned by `/openai/v1/models` and shown in the telegram `/model` picker. API mode refuses to boot without it; telegram `/model` picker degrades to a "set this env var" reply. |
-| `AICODEBOX_AVAILABLE_EFFORTS` | adapter list | Override the effort/`--thinking` list exposed via `/effort` (comma-separated) |
-
-Git identity settings are optional and applied on every container start. Empty values leave existing configuration unchanged. Newlines and carriage returns are rejected. Child images map their own Git identity prefixes to these shared names; an explicit shared setting wins.
-
-At startup, `aicode` adopts the workspace owner's UID and GID when both are nonzero, including IDs already used by another account in the image. It keeps its supplementary groups, passwordless sudo, and access to a mounted Docker socket. If either workspace ID is zero, it keeps the image's non-root identity. Accounts sharing a UID have the same Unix identity; numeric username lookups may show the other account's name. `HOME` remains `/home/aicode`.
-
-### Mode flags
-
-| Var | Default | What it does |
-|-----|---------|--------------|
-| `AICODEBOX_API_MODE` | `0` | Boot the HTTP API server (foreground) |
-| `AICODEBOX_TELEGRAM_MODE` | `0` | Boot the Telegram bot (foreground) |
-| `AICODEBOX_CRON_MODE` | `0` | Boot the cron scheduler (foreground; runs in-thread if telegram is also on) |
-| `AICODEBOX_MCP_MODE` | `0` | Expose the MCP server — mounted at `/mcp/` in API mode, or as a sidecar elsewhere |
-
-### API mode config
-
-| Var | Default | What it does |
-|-----|---------|--------------|
-| `AICODEBOX_API_MODE_PORT` | `8080` | Port the API server binds to |
-| `AICODEBOX_API_MODE_TOKEN` | empty | Bearer token for the API surface. Empty = no auth |
-
-### Telegram mode config
-
-| Var | Default | What it does |
-|-----|---------|--------------|
-| `AICODEBOX_TELEGRAM_MODE_TOKEN` | — | Bot token from @BotFather |
-| `AICODEBOX_TELEGRAM_MODE_CONFIG` | `$HOME/.aicodebox/telegram.yml` | Path to the telegram config yaml |
-| `AICODEBOX_TELEGRAM_MODE_OVERRIDES` | `$HOME/.aicodebox/telegram_overrides.json` | Per-chat override store (model/effort/system prompts) |
-
-### Cron mode config
-
-| Var | Default | What it does |
-|-----|---------|--------------|
-| `AICODEBOX_CRON_MODE_FILE` | — | Path to the cron yaml |
-| `AICODEBOX_CRON_MODE_HISTORY_DIR` | `$HOME/.aicodebox/cron` | Cron state root for run artifacts, job summaries, and Telegram reply metadata |
-
-### MCP mode config
-
-| Var | Default | What it does |
-|-----|---------|--------------|
-| `AICODEBOX_MCP_MODE_PORT` | `8081` | Port the sidecar MCP server binds to (ignored when MCP is mounted inside API) |
-| `AICODEBOX_MCP_MODE_TOKEN` | empty | Bearer token for MCP. Empty = no auth. **No fallback to `API_MODE_TOKEN`** |
-| `AICODEBOX_MCP_MODE_ALLOWED_HOSTS` | loopback hosts | Comma-separated `Host` values accepted by MCP. Add each reverse-proxy host name. |
-| `AICODEBOX_MCP_MODE_ALLOWED_ORIGINS` | loopback HTTP origins | Comma-separated browser origins accepted by MCP. Add each proxy origin that sends browser requests. |
-
-## Init scripts and user bin
-
-The entrypoint runs init scripts once per container, the first time it starts. Restarting the container does not run them again; a new container does, even when it mounts the same `$HOME/.aicodebox`. The record of the run lives in the container filesystem at `/var/lib/aicodebox/init-done`.
-
-1. `/aicodebox-init.d/*.sh`, which the child image bakes in, run first.
-2. `$HOME/.aicodebox/init.d/*.sh`, your own, run next. Bind-mount `$HOME/.aicodebox` to supply them.
-
-Both sets run in filename order as `aicode`, which has passwordless sudo, with `$HOME/.aicodebox/bin` already on `PATH`. A script that exits non-zero is logged as `[entrypoint] init script <path> failed`, and the rest still run.
-
-Executables in `$HOME/.aicodebox/bin` are on `PATH` ahead of everything else, for the agent in every mode, for init scripts, and for `docker exec` shells.
-
-## Child image recipe
-
-Minimal adapter that wires up an npm-shipped agent:
-
-```dockerfile
-FROM psyb0t/aicodebox:latest
-
-# Your agent — pin the version.
-ARG AGENT_VERSION=0.74.0
-RUN npm install -g @your-org/your-agent@${AGENT_VERSION}
-
-# Your adapter package — implements aicodebox.adapters.base.AgentAdapter.
-COPY your_adapter /opt/your_adapter
-RUN pip3 install --no-cache-dir --break-system-packages /opt/your_adapter
-
-ENV AICODEBOX_ADAPTER=your_adapter.adapter:YourAdapter \
-    AICODEBOX_AGENT_BINARY=your-agent
-```
-
-Boot it:
+| Layer | The goods |
+| --- | --- |
+| **OS** | Ubuntu 24.04. `aicode` user (UID 1000), passwordless sudo, docker group. |
+| **Runtimes** | Node.js 24.21.0 (for agents that ship as npm), Python 3.14.8, uv, Docker CE with buildx and compose (in case your agent needs to spawn containers). |
+| **Package** | `aicodebox`: the adapter contract plus four mode dispatchers (API, Telegram, cron, MCP). Pure Python, nothing runs until you boot a mode. |
+| **Auth** | `AICODEBOX_API_MODE_TOKEN` guards the API, `AICODEBOX_MCP_MODE_TOKEN` guards MCP. One bearer each, no fallback between them. Empty means no auth. Telegram has its own allowlist. |
+| **State** | Telegram overrides, cron history, your `bin/` and `init.d/` live under `$HOME/.aicodebox/`. Bind-mount it if you want it to outlive the container. |
+
+`psyb0t/aicodebox:latest` is deliberately small. `psyb0t/aicodebox:latest-full` adds a shared development toolchain for agent images that need it: Go and its tools, pinned Node and Python developer tools, editors, database clients, `gh`, Terraform, kubectl and Helm. The full image keeps some optional Node tools with known dependency advisories; [the advisory list](https://psyb0t.github.io/docker-aicodebox/dependency-audit/) says which and why.
+
+## Quick start
+
+Build your child image as above, then boot it in API mode:
 
 ```bash
-docker run --rm -p 8080:8080 \
+docker run --rm -p 127.0.0.1:8080:8080 \
   -e AICODEBOX_API_MODE=1 \
-  -e AICODEBOX_API_MODE_TOKEN=$(openssl rand -hex 16) \
+  -e AICODEBOX_API_MODE_TOKEN="$(openssl rand -hex 16)" \
+  -e AICODEBOX_AVAILABLE_MODELS=model-a,model-b \
   -v "$PWD/workspace:/workspace" \
   your/child-image:latest
 ```
 
-A reference child image lives at [psyb0t/pibox](https://github.com/psyb0t/docker-pibox) — wraps [pi-coding-agent](https://github.com/earendil-works/pi-coding-agent) and uses this base verbatim.
+API mode refuses to boot without `AICODEBOX_AVAILABLE_MODELS` (or `available_models` on the adapter), because `/openai/v1/models` needs real model IDs. The adapter itself is one class with a `build_argv` method; the [adapter contract](https://psyb0t.github.io/docker-aicodebox/adapter-contract/) has a complete example.
 
-## Full image
+## Modes
 
-Use the full variant only when the agent needs a general development toolchain:
+Set a flag to `1` and the entrypoint starts that mode. No flag, no mode: the container runs your agent's CLI with its arguments.
 
-```dockerfile
-FROM psyb0t/aicodebox:latest-full
-```
+| Flag | Mode |
+| --- | --- |
+| `AICODEBOX_API_MODE` | FastAPI on `:8080`: `/run`, files, and `/openai/v1/chat/completions`. |
+| `AICODEBOX_TELEGRAM_MODE` | A Telegram bot that runs the agent per chat, with uploads, attachments and per-chat overrides. |
+| `AICODEBOX_CRON_MODE` | Jobs from a YAML file on five or six field cron schedules, with run history and optional Telegram notifications. |
+| `AICODEBOX_MCP_MODE` | An MCP server, at `/mcp/` inside API mode or on `:8081` beside anything else. |
 
-It keeps the same entrypoint, workspace contract, Python package, and mode
-surfaces as `latest`. The difference is the toolchain. A child image should
-select one parent image per variant and install only its agent-specific CLI,
-adapter, entrypoint, and configuration.
+API, Telegram and cron are foreground modes and don't stack: API wins over the rest, and Telegram plus cron share one process. MCP coexists with any of them. Details on the [modes page](https://psyb0t.github.io/docker-aicodebox/modes/).
 
 ## Development
 
 ```bash
-make help            # list targets
-make build           # docker build .
-make build-full      # build aicodebox:latest-full on the matching local minimal tag
-make build-all        # build both variants
-make test            # python unit tests (217 cases, adapter contract, modes, helpers)
-make test-unit       # same as test
-make test-integration # build and verify startup hooks, ownership and socket permissions
-make test-entrypoint-identity # test identity remapping with an existing local image
-make test-full-image # build full and verify every documented CLI tool
-make lint            # flake8 + pyright
-make format          # isort + black
-make clean           # nuke caches + the built image
+make help        # list targets
+make build       # build psyb0t/aicodebox:latest
+make build-full  # build latest-full on top of the local minimal image
+make lint        # flake8 + pyright, in a pinned uv container
+make test-ci     # unit tests, in the same container (what CI runs)
+make docs        # build the documentation site into .testing/docs-site
 ```
 
-Python unit tests run in-process without Docker. The suite stubs out the adapter via `AICODEBOX_ADAPTER=aicodebox.tests.conftest:_StubAdapter` so the modes can be exercised without a real agent on disk. Entrypoint integration tests require Docker and run disposable containers without a host Docker socket or credentials. To test a changed entrypoint without rebuilding, run `ENTRYPOINT="$PWD/entrypoint.sh" make test-entrypoint-identity`; set `IMAGE` to select another existing image.
+Lint and the CI tests need only Docker. The rest of the targets, the integration tests and the CI pipeline are on the [development page](https://psyb0t.github.io/docker-aicodebox/development/).
 
-For integration testing with a real agent + real Telegram chat, see the e2e harness in the [pibox](https://github.com/psyb0t/docker-pibox) repo — it uses [psyb0t/telethon-plus](https://github.com/psyb0t/docker-telethon) as a userbot driver.
+## Sponsor
+
+<a href="https://www.buymeacoffee.com/psyb0t"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-blue.png" alt="Buy Me a Coffee" height="60" width="217"></a>
 
 ## License
 
-WTFPL — see [LICENSE](LICENSE). Do what the fuck you want.
+WTFPL, see [LICENSE](https://github.com/psyb0t/docker-aicodebox/blob/main/LICENSE). Do what the fuck you want.

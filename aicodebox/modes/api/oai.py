@@ -255,10 +255,16 @@ async def _messages_to_prompt(
     conv: list[dict[str, Any]] = []
     has_multimodal = False
     for msg in messages:
+        # A null content (an assistant turn that only carried tool_calls)
+        # still raises here outside tool mode, as it always has.
         if msg.role == "system":
-            system_parts.append(_content_text_only(msg.content))
+            system_parts.append(
+                _content_text_only(msg.content),  # pyright: ignore[reportArgumentType]
+            )
             continue
-        resolved = await _resolve_content(msg.content)
+        resolved = await _resolve_content(
+            msg.content,  # pyright: ignore[reportArgumentType]
+        )
         if isinstance(msg.content, list) and any(
             isinstance(b, dict) and b.get("type") == "image_url"
             for b in msg.content

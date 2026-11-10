@@ -19,6 +19,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+from starlette.types import Receive, Scope, Send
+
 from aicodebox.modes.api.workspace import ROOT_WORKSPACE, resolve as resolve_workspace
 from aicodebox.shared.runner import RunSpec, run as run_agent
 
@@ -226,7 +228,7 @@ def build_mcp_app() -> Any:
     return mcp.streamable_http_app()
 
 
-def _scope_auth_ok(scope: dict[str, Any]) -> bool:
+def _scope_auth_ok(scope: Scope) -> bool:
     token = mcp_token()
     if not token:
         return True
@@ -247,7 +249,7 @@ class MCPWithAuth:
     def __init__(self, app: Any) -> None:
         self._app = app
 
-    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] not in ("http", "websocket"):
             await self._app(scope, receive, send)
             return

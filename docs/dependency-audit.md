@@ -1,10 +1,17 @@
+---
+title: "Optional Node tool advisories"
+description: "Known dependency advisories in the full image's optional Node developer tools, how they are reachable, and how to reproduce the audit with pnpm."
+nav_order: 1
+parent: "Full image"
+---
+
 # Optional Node tool advisories
 
 The full image's locked Node developer-tool graph for Aicodebox v0.18.0 reports 78 advisories: 8 critical, 41 high, 26 moderate and 3 low. These findings concern installed third-party packages, not findings in Aicodebox source. This is not evidence that Aicodebox source is free of vulnerabilities.
 
 ## Exposure and retained dependencies
 
-`Dockerfile.full` installs this graph under `/opt/aicodebox-node` and links its commands into `/usr/local/bin`. The minimal image does not install this optional graph. The Python API, MCP, Telegram and cron dispatchers do not import these Node modules. An agent, user or adapter can still invoke the installed commands, so the vulnerabilities remain reachable when those tools process hostile input, including projects, templates, archives, collections and network responses. A compromised tool has the container's access, including any mounted workspace, credentials and Docker socket.
+[`Dockerfile.full`](https://github.com/psyb0t/docker-aicodebox/blob/main/Dockerfile.full) installs this graph under `/opt/aicodebox-node` and links its commands into `/usr/local/bin`. The minimal image does not install this optional graph. The Python API, MCP, Telegram and cron dispatchers do not import these Node modules. An agent, user or adapter can still invoke the installed commands, so the vulnerabilities remain reachable when those tools process hostile input, including projects, templates, archives, collections and network responses. A compromised tool has the container's access, including any mounted workspace, credentials and Docker socket.
 
 The lockfile refresh updates transitive dependencies within the selected packages' declared constraints. The remaining findings below still occur under those pinned parent tools. Some upstream packages have no published fix; other fixes require changing or overriding the parent dependency constraints. This release retains the advertised tools instead of removing them or applying untested cross-major overrides. It does not suppress the advisories or claim the commands are safe for untrusted input. Prefer the minimal image when these tools are unnecessary.
 
@@ -12,7 +19,7 @@ Each dependency path below records the installed route from a top-level tool to 
 
 ## Audit reproduction
 
-Run the pinned package manager from `full-node/`:
+Run the pinned package manager from [`full-node/`](https://github.com/psyb0t/docker-aicodebox/tree/main/full-node):
 
 ```bash
 corepack pnpm@12.12.1 audit --prod --json

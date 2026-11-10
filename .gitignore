@@ -1,14 +1,12 @@
-# Secrets — never commit
+# Secrets: never commit
 .env
 .env.*
 *.env
 !.env.example
 
 # Local tooling / scratch
-AGENTS.md
 CODEX.local.md
 ANUSTIMES.md
-CLAUDE.md
 PLAN.md
 git-update.sh
 git-update.sh.debot
@@ -23,6 +21,9 @@ __pycache__/
 build/
 dist/
 
+# Local config overrides at any depth
+*.local.json
+
 # Local venvs
 .venv/
 venv/
@@ -33,5 +34,5 @@ venv/
 full-node/.pnpm-store/
 .pnpm-store/
 
-# Cloned upstream sources read during research — scratch, never shipped
+# Cloned upstream sources read during research: scratch, never shipped
 .research_files/

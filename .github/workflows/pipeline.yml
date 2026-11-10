@@ -1,22 +1,43 @@
 name: pipeline
 
+# Every branch push runs lint and the offline unit tests. A push to main then
+# builds the minimal image, then the full image on top of it, and publishes
+# :latest, :latest-full and the matching :sha-<commit> tags. A v* tag waits for
+# that commit's main run to succeed, promotes the same image digests to the
+# release tags without rebuilding, and cuts the GitHub Release.
 on: [push]
 
+permissions: {}
+
 jobs:
+  # Lint (flake8, pyright) and the unit tests run in the pinned uv container
+  # from the Makefile, so the runner needs only Docker. No credentials.
+  code:
+    if: "!startsWith(github.ref, 'refs/tags/')"
+    permissions:
+      contents: read
+      security-events: write
+    uses: psyb0t/reusable-github-workflows/.github/workflows/code-workflow.yml@master
+    with:
+      lint_command: "make lint"
+      test_command: "make test-ci"
+
   badges:
-    needs: [call-docker-image-workflow]
-    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    needs: [code, wait]
+    if: "always() && ((github.ref_name == github.event.repository.default_branch && needs.code.result == 'success') || (startsWith(github.ref, 'refs/tags/') && needs.wait.result == 'success'))"
     permissions:
       contents: write
     uses: psyb0t/reusable-github-workflows/.github/workflows/create-badges.yml@master
 
+  # The called workflow builds only on main/master and tags, so other branches
+  # stop after the code job.
   call-docker-image-workflow:
-    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    needs: [code]
+    if: "!startsWith(github.ref, 'refs/tags/')"
     permissions:
       contents: write
       security-events: write
     uses: psyb0t/reusable-github-workflows/.github/workflows/docker-image-workflow.yml@master
-
     with:
       repository_name: psyb0t/aicodebox
       push_sha_tag: true
@@ -27,12 +48,11 @@ jobs:
       # The full image inherits the minimal tag. Stage 1 waits for stage 0 to
       # push this run's matching minimal image first.
       build_targets: '[{"file":"Dockerfile","tag_suffix":""},{"file":"Dockerfile.full","tag_suffix":"-full","stage":1}]'
-
     secrets:
       dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
       dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
 
-  wait-for-default-branch:
+  wait:
     if: startsWith(github.ref, 'refs/tags/')
     permissions:
       actions: read
@@ -40,8 +60,8 @@ jobs:
     with:
       timeout_minutes: 180
 
-  promote-image:
-    needs: [wait-for-default-branch]
+  docker-promote:
+    needs: [wait]
     if: startsWith(github.ref, 'refs/tags/')
     permissions:
       contents: write
@@ -52,6 +72,7 @@ jobs:
       target_platforms: "linux/amd64,linux/arm64"
       build_targets: '[{"file":"Dockerfile","tag_suffix":""},{"file":"Dockerfile.full","tag_suffix":"-full","stage":1}]'
       promote_on_tag: true
+      # The release job below cuts the release from the tag's own notes.
       create_release: false
       scan_severity: "high"
       scan_fail_build: false
@@ -60,15 +81,8 @@ jobs:
       dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
 
   release:
-    needs: [promote-image]
+    needs: [docker-promote]
     if: startsWith(github.ref, 'refs/tags/')
     permissions:
       contents: write
     uses: psyb0t/reusable-github-workflows/.github/workflows/release-workflow.yml@master
-
-  release-badges:
-    needs: [release]
-    if: startsWith(github.ref, 'refs/tags/')
-    permissions:
-      contents: write
-    uses: psyb0t/reusable-github-workflows/.github/workflows/create-badges.yml@master

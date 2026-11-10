@@ -4,6 +4,12 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking REST changes (called
 out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.18.3, 2026-11-10
+
+- Publishes the documentation at https://psyb0t.github.io/docker-aicodebox/ and moves the reference material out of the README into it. Corrects the cron example: prompts only expand `{system_datetime}` and `{job_name}`. Documents that the Telegram bot answers every chat when no allowlist or `TELEGRAM_CHAT_ID` is set.
+- Runs flake8, pyright and the unit tests on every branch push, in a pinned uv container. Pyright errors now fail `make lint`.
+- Adds Buy Me a Coffee to the funding links, and commits `AGENTS.md` and the project rules in `.agents/rules/` for coding agents.
+
 ## v0.18.2, 2026-10-22
 
 - Handles workspace UID/GID and Docker socket GID collisions with existing image accounts. Preserves the workspace primary group, supplementary groups and passwordless sudo when IDs overlap.

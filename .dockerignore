@@ -27,3 +27,6 @@ Makefile
 .research_files/
 AGENTS.md
 full-node/.pnpm-store/
+.agents/
+.claude
+docs/

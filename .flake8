@@ -1,0 +1,3 @@
+[flake8]
+# The sources wrap at 120 columns; the default 79 is not the project style.
+max-line-length = 120

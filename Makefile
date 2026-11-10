@@ -2,7 +2,7 @@ IMAGE_NAME := psyb0t/aicodebox
 # Version comes from pyproject.toml so __version__, the wheel metadata, and
 # the docker image tag never drift apart. Override at build time via
 # `make build VERSION=...` if you need to pin to something other than the
-# in-tree value (rare — release flow bumps pyproject + __init__.py + tags
+# in-tree value (rare; the release flow bumps pyproject.toml and tags
 # all in the same commit).
 VERSION    ?= $(shell awk -F\" '/^version *= *"/ {print $$2; exit}' pyproject.toml)
 TAG        := v$(VERSION)
@@ -10,7 +10,23 @@ TAG        := v$(VERSION)
 -include .env
 export
 
-.PHONY: all build build-full build-all pkg-lock full-go-lock full-node-lock full-python-lock run test test-unit test-integration test-entrypoint-identity test-full-image lint format clean help version
+# Lint and the CI test suite run in this pinned uv image, so they need only
+# Docker. The virtual environment lives inside the container, never in the
+# checkout, and no host .env value reaches it.
+DEV_IMAGE := ghcr.io/astral-sh/uv:0.13.0-python3.14-trixie-slim@sha256:8e70ac2e85d09a5bb7ef09753b80671a60a71c8d24f195e4890d71e03865e36d
+DEV_RUN = docker run --rm \
+	--user "$$(id -u):$$(id -g)" \
+	-e HOME=/tmp \
+	-e UV_CACHE_DIR=/tmp/uv-cache \
+	-e UV_PROJECT_ENVIRONMENT=/tmp/venv \
+	-e UV_PYTHON_DOWNLOADS=never \
+	-v "$(CURDIR):/work" \
+	-w /work \
+	$(DEV_IMAGE)
+
+DOCS_SITE := .testing/docs-site
+
+.PHONY: all build build-full build-all pkg-lock full-go-lock full-node-lock full-python-lock run test test-unit test-ci test-integration test-entrypoint-identity test-full-image lint format docs clean help version
 
 all: build ## Build the base image
 
@@ -69,6 +85,11 @@ test: test-unit ## Run all tests
 test-unit: ## Run the python unit-test suite locally (no docker)
 	uv run --group dev pytest -q
 
+# The API modules read the workspace root at import time, before any fixture
+# runs, so point it at a directory the unprivileged container user can create.
+test-ci: ## Run the python unit-test suite in the pinned uv container (what CI runs)
+	$(DEV_RUN) sh -c 'AICODEBOX_WORKSPACE=/tmp/workspace uv run --frozen --group dev pytest -q'
+
 test-integration: build ## Build and verify startup hooks, ownership and socket permissions
 	IMAGE=$(IMAGE_NAME):$(TAG) bash scripts/test-entrypoint-hooks.sh
 	IMAGE=$(IMAGE_NAME):$(TAG) bash scripts/test-entrypoint-identity.sh
@@ -79,13 +100,29 @@ test-entrypoint-identity: ## Test workspace and socket identity remapping with a
 test-full-image: build-full ## Build full and verify the documented CLI toolchain
 	IMAGE=$(IMAGE_NAME):latest-full bash scripts/test-full-image.sh
 
-lint: ## Lint python sources
-	uv run --group dev flake8 aicodebox/
-	uv run --group dev pyright aicodebox/ || true
+lint: ## Lint python sources with flake8 and pyright in the pinned uv container
+	$(DEV_RUN) sh -c '\
+		uv run --frozen --group dev --group lint flake8 aicodebox/ && \
+		uv run --frozen --group dev --group lint pyright aicodebox/'
 
 format: ## Format python sources
 	uv run --group dev isort aicodebox/
 	uv run --group dev black aicodebox/
+
+# Builds docs/ with the image GitHub Pages uses, so the local result matches
+# the published site. The output directory is gitignored.
+docs: ## Build the documentation site into .testing/docs-site
+	@mkdir -p "$(DOCS_SITE)"
+	docker run --rm \
+		--user "$$(id -u):$$(id -g)" \
+		-e HOME=/tmp \
+		-e GITHUB_WORKSPACE=/work \
+		-e GITHUB_REPOSITORY=psyb0t/docker-aicodebox \
+		-e INPUT_SOURCE=docs \
+		-e INPUT_DESTINATION="$(DOCS_SITE)" \
+		-e INPUT_VERBOSE=false \
+		-v "$(CURDIR):/work" \
+		ghcr.io/actions/jekyll-build-pages:v1.0.13@sha256:6791ebfd912185ed59bfb5fb102664fa872496b79f87ff8b9cfba292a7345041
 
 clean: ## Remove built images and python caches
 	docker rmi $(IMAGE_NAME):$(TAG) 2>/dev/null || true
