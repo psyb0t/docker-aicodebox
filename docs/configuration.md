@@ -53,7 +53,7 @@ Each flag turns its mode on only with the value `1`. See [Modes](modes.md) for h
 | `AICODEBOX_TELEGRAM_MODE_TOKEN` | none | Bot token from @BotFather. Required for the bot and for cron notifications. |
 | `AICODEBOX_TELEGRAM_MODE_CONFIG` | `$HOME/.aicodebox/telegram.yml` | Path to the bot's YAML file. |
 | `AICODEBOX_TELEGRAM_MODE_OVERRIDES` | `$HOME/.aicodebox/telegram_overrides.json` | Where `/model`, `/effort` and the prompt commands store per-chat overrides. |
-| `TELEGRAM_CHAT_ID` | unset | The only allowed chat when the YAML file does not exist. |
+| `TELEGRAM_CHAT_ID` | unset | The only allowed chat when the YAML file does not exist. Must be a numeric chat ID; anything else stops the bot. |
 
 ## Cron mode
 

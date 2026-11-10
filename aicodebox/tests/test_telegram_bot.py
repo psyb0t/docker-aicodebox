@@ -146,6 +146,62 @@ def test_merged_chat_config_pulls_overrides(monkeypatch):
     assert cfg["model"] == "ov-m"
 
 
+def test_effort_override_beats_yaml_thinking(monkeypatch):
+    # /effort stores "effort"; the run uses thinking first, so an effort
+    # override must not be hidden by a yaml "thinking" value.
+    monkeypatch.setattr(
+        bot,
+        "config",
+        {"default": {"thinking": "high"}, "chats": {}},
+    )
+    monkeypatch.setattr(bot, "chat_overrides", {1: {"effort": "low"}})
+    cfg = bot._merged_chat_config(1)
+    assert (cfg.get("thinking") or cfg.get("effort")) == "low"
+
+
+def test_yaml_thinking_wins_without_override(monkeypatch):
+    monkeypatch.setattr(
+        bot,
+        "config",
+        {"default": {"thinking": "high", "effort": "low"}, "chats": {}},
+    )
+    monkeypatch.setattr(bot, "chat_overrides", {})
+    cfg = bot._merged_chat_config(1)
+    assert (cfg.get("thinking") or cfg.get("effort")) == "high"
+
+
+# ── /model and /effort arguments ──────────────────────────────────────────────
+
+
+def _choice_update(chat_id: int = 1) -> MagicMock:
+    update = MagicMock()
+    update.effective_user.id = 7
+    update.effective_chat.id = chat_id
+    update.effective_message.reply_text = AsyncMock()
+    return update
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("typed", ["GLM-4.7", "glm-4.7"])
+async def test_cmd_choice_matches_model_case_insensitively(
+    monkeypatch, tmp_path, typed,
+):
+    monkeypatch.setenv(
+        "AICODEBOX_TELEGRAM_MODE_OVERRIDES", str(tmp_path / "ov.json"),
+    )
+    monkeypatch.setattr(bot, "config", {"allowed_chats": [], "chats": {}})
+    state: dict[int, dict] = {}
+    monkeypatch.setattr(bot, "chat_overrides", state)
+    context = MagicMock()
+    context.args = [typed]
+
+    await bot._cmd_choice(
+        _choice_update(), context, "model", "model", ["GLM-4.7", "other"],
+    )
+
+    assert state == {1: {"model": "GLM-4.7"}}
+
+
 # ── reply prompt builders ─────────────────────────────────────────────────────
 
 

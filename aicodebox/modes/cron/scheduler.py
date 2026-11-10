@@ -125,9 +125,9 @@ def _record_telegram_message(message_id: int, entry: dict[str, Any]) -> None:
 def _expand(text: str | None, fired_at: datetime, job_name: str) -> str | None:
     if text is None:
         return None
-    return text.replace("{system_datetime}", fired_at.strftime("%Y-%m-%d %H:%M:%S UTC")).replace(
-        "{job_name}", job_name
-    )
+    # The scheduler fires on naive local time, so convert before labeling.
+    stamp = fired_at.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    return text.replace("{system_datetime}", stamp).replace("{job_name}", job_name)
 
 
 def _resolve_workspace(subpath: str) -> str:
@@ -139,8 +139,10 @@ def _resolve_workspace(subpath: str) -> str:
         if p.is_absolute() or ".." in p.parts:
             raise ValueError(f"invalid workspace subpath: {subpath!r}")
         target = (root / p).resolve()
-        if not str(target).startswith(str(root.resolve())):
-            raise ValueError(f"workspace escapes root: {subpath!r}")
+        try:
+            target.relative_to(root.resolve())
+        except ValueError as exc:
+            raise ValueError(f"workspace escapes root: {subpath!r}") from exc
     target.mkdir(parents=True, exist_ok=True)
     return str(target)
 

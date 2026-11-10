@@ -209,17 +209,9 @@ AICODE_GID=$(id -g aicode)
 ENV_EXPORTS="export HOME=/home/aicode"
 ENV_EXPORTS="$ENV_EXPORTS; export PATH=$AICODE_PATH"
 
-# Forward auth-relevant env vars verbatim (the adapter decides which it needs).
-for var in ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_OAUTH_TOKEN \
-    ANTHROPIC_BASE_URL ANTHROPIC_MODEL CLAUDE_CODE_OAUTH_TOKEN \
-    OPENAI_API_KEY OPENAI_BASE_URL OPENAI_ORG_ID \
-    GEMINI_API_KEY OPENROUTER_API_KEY ZAI_API_KEY \
-    GROQ_API_KEY DEEPSEEK_API_KEY XAI_API_KEY MISTRAL_API_KEY; do
-    val="$(printenv "$var" 2>/dev/null || true)"
-    if [ -n "$val" ]; then
-        ENV_EXPORTS="$ENV_EXPORTS; export $var=$(printf '%q' "$val")"
-    fi
-done
+# Provider keys need no forwarding: setpriv keeps the environment, and the
+# auth file above is sourced with set -a, so every such variable reaches the
+# agent as it is.
 
 # aicodebox-specific env (modes + adapter selection).
 for var in AICODEBOX_ADAPTER AICODEBOX_AGENT_BINARY AICODEBOX_WORKSPACE \

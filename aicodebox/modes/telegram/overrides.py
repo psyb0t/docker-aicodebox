@@ -99,16 +99,21 @@ def apply_choice(
 ) -> None:
     """Set or clear an override after validating against the allowlist.
 
-    A choice in RESET_TOKENS clears the override. An empty allowlist means
-    "any string accepted" (used when the adapter exposes no choice menu)."""
-    if choice in RESET_TOKENS:
+    A choice in RESET_TOKENS (any case) clears the override. A choice matches
+    the allowlist ignoring case and is stored as the allowlist spells it. An
+    empty allowlist means "any string accepted" (used when the adapter exposes
+    no choice menu)."""
+    if choice.lower() in RESET_TOKENS:
         clear_value(state, chat_id, key, path=path)
         return
     allowed_list = list(allowed)
     if allowed_list and choice not in allowed_list:
-        raise ValueError(
-            f"unknown {key} {choice!r} (allowed: {allowed_list})"
-        )
+        matches = [a for a in allowed_list if a.lower() == choice.lower()]
+        if len(matches) != 1:
+            raise ValueError(
+                f"unknown {key} {choice!r} (allowed: {allowed_list})"
+            )
+        choice = matches[0]
     set_value(state, chat_id, key, choice, path=path)
 
 

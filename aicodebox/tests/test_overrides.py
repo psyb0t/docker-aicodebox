@@ -81,6 +81,21 @@ def test_apply_choice_rejects_unknown(tmp_path):
     assert state == {}
 
 
+def test_apply_choice_reset_token_ignores_case(tmp_path):
+    p = tmp_path / "ov.json"
+    state = {1: {"model": "a"}}
+    overrides.save(state, path=p)
+    overrides.apply_choice(state, 1, "model", "Reset", ["a", "b"], path=p)
+    assert state == {}
+
+
+def test_apply_choice_stores_canonical_case(tmp_path):
+    p = tmp_path / "ov.json"
+    state: dict[int, dict] = {}
+    overrides.apply_choice(state, 1, "effort", "HIGH", ["low", "high"], path=p)
+    assert state == {1: {"effort": "high"}}
+
+
 def test_apply_choice_empty_allowlist_accepts_anything(tmp_path):
     p = tmp_path / "ov.json"
     state: dict[int, dict] = {}

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -40,7 +42,25 @@ def test_slugify_empty_fallback():
     assert scheduler._slugify("/////") == "workspace"
 
 
-def test_expand_substitutes_placeholders():
+@pytest.fixture
+def local_tz():
+    """Set the process time zone for naive datetimes, restored afterwards."""
+    original = os.environ.get("TZ")
+
+    def set_tz(name: str) -> None:
+        os.environ["TZ"] = name
+        time.tzset()
+
+    yield set_tz
+    if original is None:
+        os.environ.pop("TZ", None)
+    else:
+        os.environ["TZ"] = original
+    time.tzset()
+
+
+def test_expand_substitutes_placeholders(local_tz):
+    local_tz("UTC")
     fired = datetime(2026, 1, 2, 3, 4, 5)
     out = scheduler._expand(
         "now={system_datetime} job={job_name}",
@@ -48,6 +68,15 @@ def test_expand_substitutes_placeholders():
         "ping",
     )
     assert out == "now=2026-01-02 03:04:05 UTC job=ping"
+
+
+def test_expand_system_datetime_is_utc_when_tz_is_set(local_tz):
+    # The scheduler fires on naive local time. The placeholder says UTC,
+    # so the value must be converted, not only labeled.
+    local_tz("JST-9")  # POSIX form, needs no tzdata
+    fired = datetime(2026, 1, 2, 12, 4, 5)
+    out = scheduler._expand("{system_datetime}", fired, "ping")
+    assert out == "2026-01-02 03:04:05 UTC"
 
 
 def test_expand_passes_through_none():
@@ -68,6 +97,17 @@ def test_resolve_workspace_rejects_absolute(tmp_workspace):
 def test_resolve_workspace_rejects_dot_dot(tmp_workspace):
     with pytest.raises(ValueError):
         scheduler._resolve_workspace("../escape")
+
+
+def test_resolve_workspace_rejects_symlink_to_sibling_with_shared_prefix(
+    tmp_workspace,
+):
+    sibling = tmp_workspace.parent / f"{tmp_workspace.name}-other"
+    sibling.mkdir()
+    (tmp_workspace / "link").symlink_to(sibling)
+
+    with pytest.raises(ValueError):
+        scheduler._resolve_workspace("link")
 
 
 def test_resolve_workspace_returns_root_for_dot(tmp_workspace):

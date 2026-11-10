@@ -28,8 +28,10 @@ def resolve(subpath: str | None) -> str:
     if p.is_absolute() or ".." in p.parts:
         raise WorkspaceError(f"invalid workspace subpath: {subpath!r}")
     target = (root / p).resolve()
-    if not str(target).startswith(str(root.resolve())):
-        raise WorkspaceError(f"workspace escapes root: {subpath!r}")
+    try:
+        target.relative_to(root.resolve())
+    except ValueError as exc:
+        raise WorkspaceError(f"workspace escapes root: {subpath!r}") from exc
     target.mkdir(parents=True, exist_ok=True)
     return str(target)
 

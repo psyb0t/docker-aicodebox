@@ -21,6 +21,22 @@ def test_load_missing_file_env_fallback(monkeypatch, tmp_path):
     assert cfg["chats"] == {}
 
 
+def test_load_missing_file_env_strips_whitespace(monkeypatch, tmp_path):
+    monkeypatch.setenv("AICODEBOX_TELEGRAM_MODE_CONFIG", str(tmp_path / "absent.yml"))
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", " 123 \n")
+    assert config.load()["allowed_chats"] == [123]
+
+
+@pytest.mark.parametrize("value", ["@mychannel", "12a", "-", "1 2"])
+def test_load_missing_file_bad_env_chat_id_fails_closed(monkeypatch, tmp_path, value):
+    # A malformed TELEGRAM_CHAT_ID must not fall through to an empty
+    # allowlist, which would let every chat in.
+    monkeypatch.setenv("AICODEBOX_TELEGRAM_MODE_CONFIG", str(tmp_path / "absent.yml"))
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", value)
+    with pytest.raises(config.TelegramConfigError, match="TELEGRAM_CHAT_ID"):
+        config.load()
+
+
 def test_load_missing_file_no_env_returns_empty(monkeypatch, tmp_path):
     monkeypatch.setenv("AICODEBOX_TELEGRAM_MODE_CONFIG", str(tmp_path / "absent.yml"))
     cfg = config.load()

@@ -42,12 +42,12 @@ chats:
 | `allowed_users` | `chats.<id>` | User IDs allowed in that chat. Empty or missing means everyone in the chat. |
 | `workspace` | `default` or chat | Subdirectory of the workspace root. Without one, each chat gets `chat_<id>`, using the absolute value of the chat ID. |
 | `model` | `default` or chat | Model for the agent. |
-| `effort`, `thinking` | `default` or chat | Reasoning level. `thinking` wins when both are set. |
+| `effort`, `thinking` | `default` or chat | Reasoning level. `thinking` wins when both are set, unless `/effort` overrides it. |
 | `system_prompt` | `default` or chat | Replace the agent's system prompt. |
 | `append_system_prompt` | `default` or chat | Appended after the bot's own formatting hint. |
 | `continue` | `default` or chat | `false` starts a fresh session for every message. Default `true`. |
 
-When the file does not exist, the bot falls back to `TELEGRAM_CHAT_ID`: that one chat is allowed and nothing else is configured. With neither the file nor that variable, the bot answers every chat that finds it. Always set an allowlist; see [Security](security.md#telegram).
+When the file does not exist, the bot falls back to `TELEGRAM_CHAT_ID`: that one chat is allowed and nothing else is configured. A value that is not a numeric chat ID stops the bot at startup with `invalid telegram config`. With neither the file nor that variable, the bot answers every chat that finds it. Always set an allowlist; see [Security](security.md#telegram).
 
 Settings merge in this order, later wins: `default`, `chats.<id>`, then the chat's runtime overrides. `/reload` reads the file again without a restart.
 
@@ -70,7 +70,7 @@ To send a file back, the agent writes `[SEND_FILE: relative/path]` anywhere in i
 
 | Command | Effect |
 | --- | --- |
-| `/model [name]` | Pick the model from a keyboard of `AICODEBOX_AVAILABLE_MODELS` or the adapter's list, or set it directly. The argument is lowercased before it is matched. |
+| `/model [name]` | Pick the model from a keyboard of `AICODEBOX_AVAILABLE_MODELS` or the adapter's list, or set it directly. The argument matches the list ignoring case and is stored as the list spells it. |
 | `/effort [level]` | The same for the reasoning level, from `AICODEBOX_AVAILABLE_EFFORTS` or the adapter's list. |
 | `/system_prompt [text]` | Show or set this chat's system prompt override. |
 | `/append_system_prompt [text]` | Show or set this chat's appended prompt override. |
@@ -81,7 +81,7 @@ To send a file back, the agent writes `[SEND_FILE: relative/path]` anywhere in i
 | `/reload` | Read `telegram.yml` again. |
 | `/start`, `/help` | Short greeting and command list. |
 
-`reset`, `default`, `clear`, `none` or `__reset__` as the value clears an override. `/effort` stores the `effort` setting, so it has no effect on a chat whose configuration sets `thinking`. With no model or effort list configured, `/model` and `/effort` answer with the variable to set.
+`reset`, `default`, `clear`, `none` or `__reset__` as the value clears an override. `/effort` stores the `effort` setting and replaces a `thinking` value from the configuration for that chat. With no model or effort list configured, `/model` and `/effort` answer with the variable to set.
 
 Overrides are stored in `$HOME/.aicodebox/telegram_overrides.json` (or `AICODEBOX_TELEGRAM_MODE_OVERRIDES`) and survive restarts when that directory is mounted.
 

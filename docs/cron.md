@@ -64,7 +64,7 @@ If a job is still running when its next time comes, that tick is skipped and log
 
 | Placeholder | Replaced with |
 | --- | --- |
-| `{system_datetime}` | The scheduled time, as `YYYY-MM-DD HH:MM:SS UTC`. The `UTC` suffix is fixed text, so with `TZ` set this is local time. |
+| `{system_datetime}` | The scheduled time in UTC, as `YYYY-MM-DD HH:MM:SS UTC`, also when `TZ` is set. |
 | `{job_name}` | The job's name. |
 
 Nothing else is replaced.

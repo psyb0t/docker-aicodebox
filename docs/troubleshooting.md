@@ -32,7 +32,7 @@ The port variable is set to something that is not an integer, or to an empty str
 
 ### `AICODEBOX_MCP_MODE_ALLOWED_HOSTS must contain at least one value`
 
-The variable is set but empty, often from copying `.env.example` as it is. Unset it to keep the loopback default, or list real host names. The same goes for `AICODEBOX_MCP_MODE_ALLOWED_ORIGINS`. In API mode this shows up as `mcp: failed to build MCP app. MCP endpoint not mounted`: the API keeps running and `/mcp/` returns 404. The standalone MCP process exits instead.
+The variable is set but empty, for example from an env file with `AICODEBOX_MCP_MODE_ALLOWED_HOSTS=` and nothing after it. Unset it to keep the loopback default, or list real host names. The same goes for `AICODEBOX_MCP_MODE_ALLOWED_ORIGINS`. In API mode this shows up as `mcp: failed to build MCP app. MCP endpoint not mounted`: the API keeps running and `/mcp/` returns 404. The standalone MCP process exits instead.
 
 ### `AICODEBOX_GIT_NAME must be a single line`
 
@@ -58,7 +58,7 @@ Telegram mode is on without a bot token. Get one from @BotFather.
 
 ### `invalid telegram config: ...`
 
-`telegram.yml` is not valid YAML, or `allowed_chats` is not a list, or `chats` or `default` is not a mapping. The message names the problem.
+`telegram.yml` is not valid YAML, or `allowed_chats` is not a list, or `chats` or `default` is not a mapping. Without `telegram.yml`, it also means `TELEGRAM_CHAT_ID` is not a numeric chat ID, such as a `@channel` name. The message names the problem.
 
 ### The bot ignores my messages
 

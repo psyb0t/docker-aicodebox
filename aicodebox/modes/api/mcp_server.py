@@ -13,6 +13,7 @@ because FastMCP does not have built-in auth. Token may also arrive as the
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -21,8 +22,9 @@ from typing import Any
 
 from starlette.types import Receive, Scope, Send
 
+from aicodebox.modes.api.runs import REGISTRY as RUNS
 from aicodebox.modes.api.workspace import ROOT_WORKSPACE, resolve as resolve_workspace
-from aicodebox.shared.runner import RunSpec, run as run_agent
+from aicodebox.shared.runner import RunSpec, run as run_agent, run_with_json_retry
 
 log = logging.getLogger("api.mcp")
 
@@ -95,6 +97,24 @@ def _resolve_path(path: str) -> str:
     return str(target)
 
 
+def _run_prompt(spec: RunSpec) -> str:
+    """Run ``spec`` holding the workspace lock that /run and the OpenAI
+    endpoint share. A schema run gets the same retries as /run."""
+    if not RUNS.acquire_workspace(spec.workspace):
+        raise RuntimeError(f"workspace {spec.workspace} is busy with another run")
+    try:
+        if spec.json_schema is None:
+            return run_agent(spec).text or ""
+        result, parsed, parse_error, _ = run_with_json_retry(spec)
+    finally:
+        RUNS.release_workspace(spec.workspace)
+    if parsed is not None:
+        return json.dumps(parsed)
+    if parse_error:
+        raise ValueError(f"agent output did not match json_schema: {parse_error}")
+    return result.text or ""
+
+
 def build_mcp_app() -> Any:
     """Construct the FastMCP ASGI app. Imported lazily so the api module
     doesn't pay the import cost / dep cost when MCP is disabled."""
@@ -133,7 +153,8 @@ def build_mcp_app() -> Any:
             resume: Resume a specific session id.
             thinking: Reasoning level (off/minimal/low/medium/high/xhigh).
             json_schema: If provided, instructs the agent to emit JSON matching
-                the schema (post-validated).
+                the schema. The answer is validated and retried like /run,
+                and returned as JSON.
         """
         ws = resolve_workspace(workspace) if workspace else resolve_workspace(None)
         spec = RunSpec(
@@ -147,8 +168,9 @@ def build_mcp_app() -> Any:
             thinking=thinking or None,
             json_schema=json_schema,
         )
-        result = run_agent(spec)
-        return result.text or ""
+        # The agent call blocks for the whole run; keep it off the event loop
+        # that API mode shares with every other request.
+        return await asyncio.to_thread(_run_prompt, spec)
 
     @mcp.tool()
     async def list_files(path: str = "") -> str:

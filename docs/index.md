@@ -7,7 +7,7 @@ seo:
   type: WebSite
 ---
 
-# docker-aicodebox
+# aicodebox
 
 `psyb0t/aicodebox` is the agent-agnostic base image under [claudebox](https://github.com/psyb0t/docker-claudebox), [codexbox](https://github.com/psyb0t/docker-codexbox) and [pibox](https://github.com/psyb0t/docker-pibox). You install a terminal coding agent on top of it, write one Python adapter class that turns "run this prompt" into that agent's command line, and the base gives you an HTTP API, an OpenAI-compatible chat completions endpoint, an MCP server, a Telegram bot and a cron scheduler. One container, same interfaces, swap the agent.
 

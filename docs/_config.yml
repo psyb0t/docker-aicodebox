@@ -1,4 +1,4 @@
-title: docker-aicodebox
+title: aicodebox
 tagline: One base image that puts any terminal AI coding agent on the network
 description: A Docker base image that wraps a terminal AI coding agent in an HTTP API, an OpenAI-compatible endpoint, an MCP server, a Telegram bot and a cron scheduler through one adapter class.
 lang: en

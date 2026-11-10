@@ -155,7 +155,7 @@ Poll `GET /run/result?runId=<id>`. While the run is going it returns `status: "r
 
 ## One run per workspace
 
-A workspace runs one agent at a time, across `/run` and the OpenAI endpoint. A second request for a busy workspace gets `409 workspace <path> is busy with another run` from `/run` and `409 workspace busy, retry later` from the OpenAI endpoint. Give parallel callers different `workspace` values.
+A workspace runs one agent at a time, across `/run`, the OpenAI endpoint and the mounted MCP `run_prompt` tool. A second request for a busy workspace gets `409 workspace <path> is busy with another run` from `/run`, `409 workspace busy, retry later` from the OpenAI endpoint, and an error result from `run_prompt`. Give parallel callers different `workspace` values.
 
 ## Files
 

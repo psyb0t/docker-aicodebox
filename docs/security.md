@@ -46,7 +46,7 @@ Request paths for workspaces, files, MCP tools, Telegram `/fetch` and `[SEND_FIL
 
 ## Remote images in OpenAI requests
 
-The OpenAI endpoint downloads `http` and `https` image URLs from requests. Before the download it resolves the host and refuses private, loopback, link-local, multicast and reserved addresses. The check covers the first URL only: an HTTP redirect is followed without a second check, and the address is resolved again for the actual download. Do not rely on it to keep a caller away from internal services on a network that has them.
+The OpenAI endpoint downloads `http` and `https` image URLs from requests. Before the download it resolves the host and refuses private, loopback, link-local, multicast and reserved addresses. Every HTTP redirect target gets the same check, and a redirect that fails it stops the download. The address is resolved again for the actual download, so a host whose DNS answer changes between the check and the download can still get through. Do not rely on it to keep a caller away from internal services on a network that has them.
 
 ## Docker socket
 

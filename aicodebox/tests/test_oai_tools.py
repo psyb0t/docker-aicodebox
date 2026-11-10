@@ -377,6 +377,42 @@ def test_handler_empty_tools_is_plain_chat(client, monkeypatch):
     assert "tool_calls" not in (calls["specs"][0].system_prompt or "")
 
 
+def test_plain_chat_accepts_null_content_history(client, monkeypatch):
+    # A history from an earlier tool-calling round has an assistant turn
+    # with content null. Plain chat (no tools) must skip it, not crash.
+    calls = _patch_run(monkeypatch, "done")
+    resp = client.post(
+        "/openai/v1/chat/completions",
+        json={
+            "model": "m1",
+            "messages": [
+                {"role": "system", "content": None},
+                {"role": "user", "content": "weather in Paris?"},
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "arguments": "{\"city\": \"Paris\"}",
+                        },
+                    }],
+                },
+                {"role": "tool", "tool_call_id": "call_1", "content": "sunny"},
+                {"role": "user", "content": "thanks, summarize"},
+            ],
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json()["choices"][0]["message"]["content"] == "done"
+    prompt = calls["specs"][0].prompt
+    assert "thanks, summarize" in prompt
+    assert "sunny" in prompt
+    assert calls["specs"][0].system_prompt is None
+
+
 # ── combined tools + schema (agentic flow ending in structured JSON) ─────────
 
 _ANSWER_SCHEMA = {

@@ -1,4 +1,4 @@
-# docker-aicodebox
+# aicodebox
 
 [![CI](https://github.com/psyb0t/docker-aicodebox/actions/workflows/pipeline.yml/badge.svg?branch=main)](https://github.com/psyb0t/docker-aicodebox/actions/workflows/pipeline.yml)
 [![version](https://raw.githubusercontent.com/psyb0t/docker-aicodebox/badges/version.svg)](https://github.com/psyb0t/docker-aicodebox/releases)

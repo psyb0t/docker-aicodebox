@@ -611,7 +611,7 @@ async def _cmd_choice(
         )
         return
     if context.args:
-        choice = context.args[0].strip().lower()
+        choice = context.args[0].strip()
         try:
             _overrides.apply_choice(chat_overrides, chat.id, key, choice, options)
         except ValueError as exc:

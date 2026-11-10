@@ -26,7 +26,7 @@ DEV_RUN = docker run --rm \
 
 DOCS_SITE := .testing/docs-site
 
-.PHONY: all build build-full build-all pkg-lock full-go-lock full-node-lock full-python-lock run test test-unit test-ci test-integration test-entrypoint-identity test-full-image lint format docs clean help version
+.PHONY: all build build-full build-all pkg-lock full-go-lock full-node-lock full-python-lock run test test-unit test-ci test-integration test-entrypoint-identity test-full-image lint docs clean help version
 
 all: build ## Build the base image
 
@@ -77,8 +77,10 @@ full-python-lock: build ## Regenerate the full-image Python requirements lockfil
 			--exclude-newer 2026-10-12T00:00:00Z --generate-hashes \
 			-o requirements.txt requirements.in
 
+# The base image ships no agent, so pass bash as the agent binary. The
+# entrypoint still runs its startup steps and drops to the aicode user.
 run: build ## Drop into an interactive shell inside the base image
-	docker run --rm -it $(IMAGE_NAME):$(TAG) bash
+	docker run --rm -it -e AICODEBOX_AGENT_BINARY=bash $(IMAGE_NAME):$(TAG)
 
 test: test-unit ## Run all tests
 
@@ -104,10 +106,6 @@ lint: ## Lint python sources with flake8 and pyright in the pinned uv container
 	$(DEV_RUN) sh -c '\
 		uv run --frozen --group dev --group lint flake8 aicodebox/ && \
 		uv run --frozen --group dev --group lint pyright aicodebox/'
-
-format: ## Format python sources
-	uv run --group dev isort aicodebox/
-	uv run --group dev black aicodebox/
 
 # Builds docs/ with the image GitHub Pages uses, so the local result matches
 # the published site. The output directory is gitignored.

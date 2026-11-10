@@ -65,8 +65,8 @@ The `x-aicodebox-*` headers set run options that have no OpenAI field. A malform
 
 - `system` messages are joined into the system prompt.
 - A single user message is sent as the prompt as it is.
-- Several messages are flattened into a transcript with `[USER]` and `[ASSISTANT]` tags, headed by "Continue this conversation. Respond to the last user message."
-- `image_url` parts are saved under `_oai_uploads/` in the workspace root. A `data:` URL is decoded. An `http` or `https` URL is downloaded, up to 50 MB with a 30 second timeout, only if its host does not resolve to a private, loopback, link-local, multicast or reserved address. When images are present, the whole conversation is written to a JSON file in the same directory and the prompt tells the agent to read it. Uploads older than 24 hours are deleted.
+- Several messages are flattened into a transcript with `[USER]` and `[ASSISTANT]` tags, headed by "Continue this conversation. Respond to the last user message." A message with `content: null`, such as an assistant turn that only carried `tool_calls`, counts as empty and is left out.
+- `image_url` parts are saved under `_oai_uploads/` in the workspace root. A `data:` URL is decoded. An `http` or `https` URL is downloaded, up to 50 MB with a 30 second timeout, only if its host does not resolve to a private, loopback, link-local, multicast or reserved address. Redirects are checked the same way. When images are present, the whole conversation is written to a JSON file in the same directory and the prompt tells the agent to read it. Uploads older than 24 hours are deleted.
 
 ## Response
 

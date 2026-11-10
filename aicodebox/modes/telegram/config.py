@@ -65,8 +65,17 @@ def load() -> dict[str, Any]:
         }
 
     # env-only fallback — useful for tests and simple deployments
-    env_chat = os.environ.get("TELEGRAM_CHAT_ID")
-    allowed = [int(env_chat)] if env_chat and env_chat.lstrip("-").isdigit() else []
+    # A set but malformed TELEGRAM_CHAT_ID is an error. Falling back to an
+    # empty allowlist would let every chat in.
+    env_chat = (os.environ.get("TELEGRAM_CHAT_ID") or "").strip()
+    allowed: list[int] = []
+    if env_chat:
+        try:
+            allowed = [int(env_chat)]
+        except ValueError as exc:
+            raise TelegramConfigError(
+                f"TELEGRAM_CHAT_ID must be a numeric chat id, got {env_chat!r}",
+            ) from exc
     log.info("no telegram.yml at %s, falling back to env-only (allowed=%s)", path, allowed)
     return {"allowed_chats": allowed, "default": {}, "chats": {}}
 
@@ -89,12 +98,17 @@ def get_chat_config(
 ) -> dict[str, Any]:
     """Merge yaml default + per-chat yaml block + runtime overrides.
 
-    Precedence (low→high): default → chats[<id>] → overrides[<id>]. When no
+    Precedence (low→high): default → chats[<id>] → overrides[<id>]. An
+    ``effort`` override also replaces a yaml ``thinking``. When no
     workspace is set anywhere the default is a per-chat subdir so each chat
     is automatically isolated."""
     defaults = cfg.get("default", {})
     chat_cfg = cfg.get("chats", {}).get(chat_id, {})
     merged: dict[str, Any] = {**defaults, **chat_cfg, **(overrides or {})}
+    # Runs use ``thinking`` before ``effort``, so an /effort override must
+    # drop a yaml ``thinking`` value or it would never take effect.
+    if overrides and "effort" in overrides and "thinking" not in overrides:
+        merged.pop("thinking", None)
     if "workspace" not in merged:
         merged["workspace"] = f"chat_{abs(chat_id)}"
     return merged

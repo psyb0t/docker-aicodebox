@@ -28,11 +28,13 @@ import os
 import shutil
 import socket
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from http.client import HTTPMessage
 from pathlib import Path
-from typing import Any, AsyncIterator, Union
+from typing import IO, Any, AsyncIterator, Union
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import StreamingResponse
@@ -167,13 +169,34 @@ def _save_data_uri(url: str) -> str | None:
     return _write_upload(raw, ext)
 
 
+class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Run the SSRF guard on every redirect target, not only the first URL."""
+
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: IO[bytes],
+        code: int,
+        msg: str,
+        headers: HTTPMessage,
+        newurl: str,
+    ) -> urllib.request.Request | None:
+        if not _is_safe_remote_url(newurl):
+            log.warning("refusing image redirect to unsafe URL: %s", newurl[:200])
+            raise urllib.error.HTTPError(
+                newurl, code, "redirect to unsafe URL refused", headers, fp,
+            )
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 def _fetch_remote_sync(url: str) -> tuple[bytes, str] | None:
     if not _is_safe_remote_url(url):
         log.warning("refusing to fetch image from unsafe URL: %s", url[:200])
         return None
+    opener = urllib.request.build_opener(_SafeRedirectHandler)
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "aicodebox-api"})
-        with urllib.request.urlopen(req, timeout=REMOTE_IMAGE_TIMEOUT) as resp:  # noqa: S310
+        with opener.open(req, timeout=REMOTE_IMAGE_TIMEOUT) as resp:  # noqa: S310
             content_type = resp.headers.get("Content-Type", "application/octet-stream")
             raw = resp.read(REMOTE_IMAGE_MAX_BYTES)
     except Exception:  # noqa: BLE001
@@ -256,15 +279,12 @@ async def _messages_to_prompt(
     has_multimodal = False
     for msg in messages:
         # A null content (an assistant turn that only carried tool_calls)
-        # still raises here outside tool mode, as it always has.
+        # counts as empty text, so the transcript skips it.
+        content = msg.content if msg.content is not None else ""
         if msg.role == "system":
-            system_parts.append(
-                _content_text_only(msg.content),  # pyright: ignore[reportArgumentType]
-            )
+            system_parts.append(_content_text_only(content))
             continue
-        resolved = await _resolve_content(
-            msg.content,  # pyright: ignore[reportArgumentType]
-        )
+        resolved = await _resolve_content(content)
         if isinstance(msg.content, list) and any(
             isinstance(b, dict) and b.get("type") == "image_url"
             for b in msg.content

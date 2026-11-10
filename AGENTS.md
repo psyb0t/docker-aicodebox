@@ -1,4 +1,4 @@
-# docker-aicodebox
+# aicodebox
 
 Instructions for AI coding agents (Codex, Claude Code and others) working in this repository. Human contributors can read it too; the user documentation is the site under `docs/`.
 
@@ -66,11 +66,11 @@ make version V=X.Y.Z   # set the package version, no commit
 ## Project-specific landmines
 
 - Several modules read environment variables at import time: `ROOT_WORKSPACE` in `modes/api/workspace.py` and `modes/telegram/bot.py`, `UPLOAD_DIR` in `oai.py`, `BOT_TOKEN` in `modes/telegram/utils.py`, `HISTORY_ROOT` in `modes/cron/scheduler.py`. Tests that change these must patch the module attribute, not only the environment. `make test-ci` sets `AICODEBOX_WORKSPACE=/tmp/workspace` for this reason.
-- The entrypoint execs through `setpriv` and keeps the whole environment, so every container variable reaches the agent. The export lists in `entrypoint.sh` only re-export values; they are not a filter.
+- The entrypoint execs through `setpriv` and keeps the whole environment, so every container variable, and every variable from the auth file, reaches the agent. The `AICODEBOX_*` export list in `entrypoint.sh` only re-exports values; it is not a filter.
 - Mode flags are compared to the string `1` in both `entrypoint.sh` and the Python modes.
 - Agent subprocesses start with `start_new_session=True` so a group signal from the agent cannot stop the API server (PID 1). Keep it on any new spawn.
 - An empty `AICODEBOX_MCP_MODE_ALLOWED_HOSTS` or `..._ORIGINS` raises `ValueError` in `mcp_server._allowlist_from_environment`. Unset means default.
-- `.env.example` sets those two MCP variables to empty strings, so copying it unchanged with MCP on breaks MCP.
+- `.env.example` keeps those two MCP variables commented out so a copy of it leaves them unset. `test_env_example_copied_as_is_keeps_mcp_working` checks this.
 
 ## Rules
 

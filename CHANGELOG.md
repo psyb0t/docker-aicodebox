@@ -4,6 +4,19 @@ All notable changes per release. Versions follow [semver](https://semver.org)
 pre-1.0 conventions: minor bumps may include breaking REST changes (called
 out explicitly), patch bumps are docs / build / fixes only.
 
+## v0.18.4, 2026-11-10
+
+- Fixes a 500 from the OpenAI-compatible endpoint when a message has `content: null`, such as an assistant turn that only carried tool calls. Such messages now count as empty text.
+- Checks every redirect of a remote `image_url` fetch against the same safety rules as the first URL, so a redirect to a loopback or private address is refused.
+- Confines `/run`, OpenAI and cron workspaces with a real path comparison. A symlink to a sibling directory that only shares the workspace prefix is now rejected.
+- MCP `run_prompt` takes the same per-workspace lock as `/run` and returns an error result when the workspace is busy. With `json_schema` it retries like `/run` and returns the validated JSON. The agent runs in a worker thread, so a long run no longer blocks the API server.
+- A `TELEGRAM_CHAT_ID` that is not a numeric chat ID now stops the bot at startup instead of leaving it open to every chat. Surrounding whitespace is ignored.
+- Telegram `/model` matches choices ignoring case and stores them as listed. An `/effort` override now replaces a `thinking` value from `telegram.yml`.
+- Cron `{system_datetime}` is converted to UTC, as its label says, instead of printing local time.
+- `.env.example` leaves the MCP host and origin allowlists commented out, so a copy of it keeps MCP working.
+- Fixes `make run` and removes the broken `make format` target.
+- Titles the README and the documentation site `aicodebox`, without the `docker-` prefix.
+
 ## v0.18.3, 2026-11-10
 
 - Publishes the documentation at https://psyb0t.github.io/docker-aicodebox/ and moves the reference material out of the README into it. Corrects the cron example: prompts only expand `{system_datetime}` and `{job_name}`. Documents that the Telegram bot answers every chat when no allowlist or `TELEGRAM_CHAT_ID` is set.

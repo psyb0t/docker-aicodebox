@@ -45,7 +45,7 @@ Both variables are comma-separated and replace the defaults. A value may end in 
 
 | Tool | Arguments | Returns |
 | --- | --- | --- |
-| `run_prompt` | `prompt`, and optional `workspace`, `model`, `system_prompt`, `append_system_prompt`, `no_continue` (default `true`), `resume`, `thinking`, `json_schema` | The agent's final text. |
+| `run_prompt` | `prompt`, and optional `workspace`, `model`, `system_prompt`, `append_system_prompt`, `no_continue` (default `true`), `resume`, `thinking`, `json_schema` | The agent's final text, or with `json_schema` the validated JSON. |
 | `list_files` | `path` (default root) | JSON `{"path", "entries": [{"name", "type"}]}`. |
 | `read_file` | `path` | The file as text, with undecodable bytes replaced. |
 | `write_file` | `path`, `content` | Overwrites or creates the file and its parents. JSON `{"status": "ok", "path", "size"}`, where `size` counts characters. |
@@ -53,7 +53,9 @@ Both variables are comma-separated and replace the defaults. A value may end in 
 
 Paths are relative to `AICODEBOX_WORKSPACE`. A path that resolves outside it returns an error result instead of touching the file.
 
-`run_prompt` runs the agent once. Unlike `/run` it does not retry on a schema failure: `json_schema` reaches the adapter, and the adapter decides what to do with it. `run_prompt` does not take the per-workspace lock that `/run` and the OpenAI endpoint share, so an MCP run can overlap an HTTP run in the same workspace.
+`run_prompt` takes the per-workspace lock that `/run` and the OpenAI endpoint share. When the workspace is busy with another run, the tool returns an error result instead of starting the agent. The standalone MCP process has its own lock, so there it only keeps MCP runs apart.
+
+With `json_schema`, `run_prompt` validates the answer and retries like `/run`, with a fresh session for each retry. It returns the parsed JSON, or an error result naming the validation error when every attempt fails.
 
 ## Client setup
 
